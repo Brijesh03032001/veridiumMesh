@@ -265,12 +265,12 @@ GET /chain
 
 ## Team
 
-| Name | Role |
-|------|------|
-| Brijesh Kumar (Brijesh03032001) | Blockchain, ML, Backend, Frontend |
+| # | Name | Role |
+|---|------|------|
+| 1 | **Harpreet Kaur Brar** | Primary responsibility: chaincode and asset layer — asset modeling, project submission, and query functions. Additionally: frontend/UI development. |
+| 2 | **Sreeram Saravana Prasad** | Credit creation (minting logic), validation checks, and integration of AI risk scores. Additionally: frontend/UI development. |
+| 3 | **Asmi Umesh Pulgam** | Ownership updates and transaction handling. Additionally: project report creation. |
+| 4 | **Brijesh Kumar** | Credit retirement logic and double-spending prevention. Additionally: frontend/UI development. |
+| 5 | **Vandhana Vemuri** | Audit functions, history tracking, and endorsement policy configuration. Additionally: project report creation. |
 
----
 
-## License
-
-MIT
