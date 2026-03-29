@@ -9,8 +9,10 @@
 Carbon credit markets suffer from widespread fraud: inflated issuance volumes, double-counting, and bogus project types. **VeridiumAI** addresses this by:
 
 1. **Scoring every credit** with a trained Isolation Forest model before it touches the chain.
-2. **Writing the AI risk score into an immutable block** so auditors can verify that all on-chain credits were screened.
-3. **Providing a developer console and blockchain explorer** via a Next.js frontend so any user can mint, transfer, retire, and inspect credits in real time.
+2. **Enforcing a dual-approval endorsement policy** — both a project developer and a government regulator must sign off before any credit can be minted.
+3. **Writing the AI risk score into an immutable block** so auditors can verify that all on-chain credits were screened.
+4. **Providing a full audit trail** — every transaction for a credit is traceable back to its block.
+5. **Providing a developer console and blockchain explorer** via a Next.js frontend so any user can mint, transfer, retire, and inspect credits in real time.
 
 The dataset used is the **Berkeley Voluntary Registry Offsets Database (VROD)** — a public dataset of ~5,700 real-world carbon credit projects used to train the anomaly detector.
 
@@ -23,8 +25,9 @@ veridium-ai/
 ├── api/                  # FastAPI backend (REST endpoints)
 │   └── app.py
 ├── blockchain/           # Custom PoW blockchain (Python)
-│   ├── block.py          # Block + SHA-256 mining
-│   ├── blockchain.py     # Blockchain state machine
+│   ├── block.py          # Block + SHA-256 mining + serialisation
+│   ├── blockchain.py     # Blockchain infrastructure (mining, persistence, validation)
+│   ├── contract.py       # Smart contract (credit lifecycle + endorsement policy)
 │   └── types.py          # Transaction type constants
 ├── ml/                   # Machine-learning layer
 │   ├── train_isoforest.py
@@ -32,17 +35,21 @@ veridium-ai/
 │   ├── isoforest.joblib  # Trained model artifact
 │   ├── scaler.joblib
 │   └── norm_params.joblib
-├── data/                 # Datasets and EDA/feature plots
+├── tests/                # Unit tests (pytest)
+│   ├── test_blockchain.py
+│   ├── test_api.py
+│   └── test_model.py
+├── data/                 # Datasets, EDA/feature plots, chain persistence
 ├── notebooks/            # Jupyter EDA and feature-engineering notebooks
 ├── scripts/              # Utility scripts
 ├── frontend/             # Next.js 16 + Tailwind + shadcn/ui
 │   └── src/
 │       ├── app/
-│       │   ├── page.tsx          # Landing page
+│       │   ├── page.tsx          # Landing page (live stats)
 │       │   ├── developer/        # Developer console
 │       │   └── explorer/         # Blockchain explorer
 │       └── lib/api.ts            # Typed API client
-└── veridium/             # Python virtual environment
+└── requirements.txt      # Python dependencies
 ```
 
 ---
@@ -58,13 +65,13 @@ source veridium/bin/activate      # macOS/Linux
 # veridium\Scripts\activate       # Windows
 
 # 2. Install dependencies
-pip install fastapi uvicorn scikit-learn joblib numpy pandas pydantic
+pip install -r requirements.txt
 
 # 3. Start the API server
-PYTHONPATH=. veridium/bin/python -m uvicorn api.app:app --reload --port 8000
+PYTHONPATH=. python -m uvicorn api.app:app --reload --port 8000
 ```
 
-API will be available at `http://localhost:8000`  
+API will be available at `http://localhost:8000`
 Interactive docs at `http://localhost:8000/docs`
 
 ### Frontend (Node 18+)
@@ -78,118 +85,201 @@ npm run build    # production build
 
 Frontend will be available at `http://localhost:3000`
 
+### Running Tests
+
+```bash
+PYTHONPATH=. python -m pytest tests/ -v
+```
+
 ### Re-training the ML model (optional)
 
 ```bash
-PYTHONPATH=. veridium/bin/python ml/train_isoforest.py
+PYTHONPATH=. python ml/train_isoforest.py
 ```
 
 ---
 
-## How to Use / Deploy
+## How to Use
 
 1. Start the **backend** (`uvicorn` on port 8000).
 2. Start the **frontend** (`npm run dev` on port 3000).
 3. Open `http://localhost:3000` → click **Developer Console**.
-4. Fill in Project ID, Project Type, Tonnes, Vintage Year, Owner ID and click **Score + Mint Credit**.
-5. The backend auto-computes risk features, runs the Isolation Forest model, and writes the result to the blockchain.
-6. View the AI risk score and computed features in the console panel.
-7. Use **Transfer** or **Retire** to move or burn credits.
-8. Open the **Explorer** page to look up any credit by ID and inspect the full chain.
+4. Fill in Project ID, Project Type, Tonnes, Vintage Year, Owner ID, Developer ID, and Regulator ID.
+5. Click **Score + Mint Credit**. The backend enforces the endorsement policy (both developer and regulator required), auto-computes risk features, runs the Isolation Forest model, and writes the result to the blockchain.
+6. View the AI risk score, auto-computed features, and block metadata in the console panel.
+7. Use **Transfer** to move credit units between owners, or **Retire** to permanently burn a credit.
+8. Open the **Explorer** page to look up any credit by ID, view the full chain, and validate chain integrity.
 
 ---
 
-## Draft Contract / Code
+## Smart Contract — `CarbonCreditContract` (`blockchain/contract.py`)
 
-*In this system the "contract" is implemented as a Python blockchain state machine rather than an on-chain Solidity contract. The components below define the rules, data structures, and transaction logic that govern how carbon credits are created, transferred, and retired — analogous to the functions of a smart contract.*
+The smart contract is implemented as a Python class that enforces all business rules, validation checks, and state transitions for the carbon credit lifecycle. It is analogous to chaincode in Hyperledger Fabric or a Solidity contract on the EVM.
 
----
-
-### Component 1 — `Block` (`blockchain/block.py`)
-
-**Purpose:** Represents one immutable unit of the chain. Stores transactions and enforces integrity via SHA-256 Proof-of-Work mining.
+### Contract Functions
 
 ```python
-class Block:
-    def __init__(self, index: int, transactions: list,
-                 previous_hash: str, nonce: int = 0):
+class CarbonCreditContract:
+
+    def check_endorsement(self, developer_id, regulator_id):
         """
-        Create a new block.
-        - index:         position in the chain (0 = genesis)
-        - transactions:  list of transaction dicts included in this block
-        - previous_hash: hash of the preceding block (links the chain)
-        - nonce:         incremented during mining to satisfy difficulty target
+        Dual-approval endorsement policy.
+        Both a project developer and a government regulator must provide
+        their identifiers before any credit can be minted. Mirrors the
+        endorsement policies in Hyperledger Fabric where multiple
+        organisations must sign off before a transaction is committed.
         """
 
-    def calculate_merkle_root(self) -> str:
+    def execute(self, tx: dict):
         """
-        SHA-256 hash of all transactions (JSON-serialised, keys sorted).
-        Ensures any tampering with transaction data invalidates the block hash.
-        """
-
-    def calculate_hash(self) -> str:
-        """
-        SHA-256 over (index + timestamp + merkle_root + previous_hash + nonce).
-        Uniquely fingerprints this block's content.
+        Single entry point for all state mutations — equivalent to the
+        Invoke() function in Hyperledger Fabric chaincode. Routes to:
+          - _mint_credit()
+          - _transfer_credit()
+          - _retire_credit()
         """
 
-    def mine_block(self, difficulty: int):
+    def _mint_credit(self, tx):
         """
-        Proof-of-Work: increment nonce until hash starts with `difficulty` zeros.
-        Prevents cheap block forgery.
+        Register a new carbon credit on the ledger.
+        Creates a credit record with status 'active' and assigns all
+        tonnes to the issuing owner. AI risk score is stored on-chain.
         """
+
+    def _transfer_credit(self, tx):
+        """
+        Move ownership units between participants.
+        Reverts if credit is retired (prevents post-retirement transfers)
+        or sender has insufficient balance (prevents double-spending).
+        """
+
+    def _retire_credit(self, tx):
+        """
+        Permanently burn a credit. Sets status to 'retired' — irreversible.
+        Reverts if caller holds 0 units.
+        """
+
+    def query_credit(self, credit_id) -> dict:
+        """Look up credit metadata by ID."""
+
+    def query_ownership(self, credit_id) -> dict:
+        """Return current ownership map {owner_id: units} for a credit."""
 ```
+
+### State Stores
+
+| Store | Key | Value |
+|-------|-----|-------|
+| `credits` | `credit_id` | `{tonnes, project_type, vintage_year, ai_risk_score, status}` |
+| `ownership` | `(credit_id, owner_id)` | `units held` |
 
 ---
 
-### Component 2 — `Blockchain` (`blockchain/blockchain.py`)
+## Blockchain Infrastructure — `Blockchain` (`blockchain/blockchain.py`)
 
-**Purpose:** The state machine that owns all credit records, enforces business rules, and maintains the append-only chain.
+The blockchain layer handles block creation, Proof-of-Work mining, chain validation, persistence, and query operations. All business logic is delegated to the `CarbonCreditContract`.
 
 ```python
 class Blockchain:
-    def __init__(self, difficulty: int = 2):
-        """
-        Initialise with an empty chain and create the genesis block.
-        - credits:    dict mapping credit_id → metadata (tonnes, type, status)
-        - ownership:  dict mapping (credit_id, owner_id) → units held
-        """
-
-    def apply_transaction(self, tx: dict):
-        """
-        Execute one of three transaction types and mutate state accordingly:
-
-        MINT_CREDIT  — registers a new credit and assigns all tonnes to the issuer.
-                       Requires: credit_id, owner_id, tonnes, project_type,
-                                 vintage_year, ai_risk_score.
-
-        TRANSFER_CREDIT — moves `units` from from_owner to to_owner.
-                          Reverts if credit is retired or sender lacks sufficient units.
-
-        RETIRE_CREDIT  — permanently marks a credit as 'retired';
-                         units can no longer be transferred.
-                         Reverts if the caller holds 0 units.
-        """
 
     def mine_pending_transactions(self) -> Block:
         """
-        Bundle all pending transactions into a new Block, mine it (PoW),
-        append it to the chain, and clear the pending queue.
-        Returns the newly mined Block.
+        Bundle pending transactions into a new Block, mine it (PoW),
+        append to the chain, execute each transaction via the smart
+        contract, persist to disk, and clear the pending queue.
         """
 
     def is_chain_valid(self) -> bool:
         """
         Walk the full chain and verify:
-        1. Each block's stored hash matches its recomputed hash.
-        2. Each block's previous_hash matches the actual hash of the prior block.
+        1. Each block's merkle root matches its recomputed merkle root.
+        2. Each block's stored hash matches its recomputed hash.
+        3. Each block's previous_hash matches the prior block's hash.
         Returns False on any inconsistency (tamper detection).
         """
+
+    def get_credit_history(self, credit_id) -> list[dict]:
+        """
+        Audit trail: walk the entire chain and return every transaction
+        for a given credit, annotated with block_index and block_hash.
+        """
+
+    def get_stats(self) -> dict:
+        """
+        Live statistics: total credits, active, retired, fraud-flagged
+        (risk >= 0.8), total transactions, and chain length.
+        """
+```
+
+### Persistence
+
+The chain auto-saves to `data/chain.json` after every mine operation and reloads on startup, replaying all transactions to rebuild state. This ensures the ledger survives server restarts.
+
+---
+
+## Block — `Block` (`blockchain/block.py`)
+
+```python
+class Block:
+
+    def calculate_merkle_root(self) -> str:
+        """SHA-256 hash of all transactions (JSON-serialised, keys sorted)."""
+
+    def calculate_hash(self) -> str:
+        """SHA-256 over (index + timestamp + merkle_root + previous_hash + nonce)."""
+
+    def mine_block(self, difficulty: int):
+        """Proof-of-Work: increment nonce until hash starts with `difficulty` zeros."""
+
+    def to_dict(self) -> dict:
+        """Serialise block to a JSON-compatible dict for persistence."""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Block:
+        """Reconstruct a Block from a serialised dict."""
 ```
 
 ---
 
-### Component 3 — Transaction Type Constants (`blockchain/types.py`)
+## AI Scoring Layer — `score_project()` (`ml/model.py`)
+
+Runs the trained Isolation Forest model to produce a fraud risk score (0–1) before a credit is written to the chain.
+
+```python
+def score_project(features: dict) -> float:
+    """
+    Input features (auto-computed by the API):
+      - R_ratio:     Issuance volume relative to peer average
+      - Vintage_Age: Years since the project vintage year
+      - M_flag:      1 if project type is historically high-risk
+      - T_flag:      1 if issuance volume spikes relative to baseline
+
+    Returns a risk score in [0.0, 1.0].
+    Higher = more anomalous = higher fraud risk.
+    Threshold >= 0.8 → HIGH RISK (flagged).
+    """
+```
+
+---
+
+## REST API Endpoints (`api/app.py`)
+
+All endpoints include input validation (positive tonnes, vintage year 1990–2026, non-blank IDs).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/credits/issue` | Enforce endorsement policy, auto-compute risk features, run AI scoring, mint credit, mine block |
+| `POST` | `/credits/transfer` | Transfer ownership units between participants |
+| `POST` | `/credits/retire` | Permanently retire (burn) a credit |
+| `GET` | `/credits/{credit_id}` | Look up credit metadata and current ownership |
+| `GET` | `/credits/{credit_id}/history` | Full audit trail of all transactions for a credit |
+| `GET` | `/chain/stats` | Live statistics (total credits, flagged, active, retired, etc.) |
+| `GET` | `/chain/validate` | Verify chain integrity (returns `is_valid` + `chain_length`) |
+| `GET` | `/chain` | Serialised view of all blocks |
+
+---
+
+## Transaction Type Constants (`blockchain/types.py`)
 
 ```python
 MINT_CREDIT     = "MINT_CREDIT"      # Issue a new carbon credit
@@ -199,66 +289,16 @@ RETIRE_CREDIT   = "RETIRE_CREDIT"    # Permanently burn a credit
 
 ---
 
-### Component 4 — AI Scoring Layer (`ml/model.py`)
+## Tests
 
-**Purpose:** Runs the trained Isolation Forest model to produce a fraud risk score (0–1) before a credit is written to the chain.
+32 unit tests covering:
 
-```python
-def score_project(
-    r_ratio: float,       # Issuance volume relative to peer average
-    vintage_age: int,     # Years since the project vintage year
-    m_flag: int,          # 1 if project type is historically high-risk
-    t_flag: int           # 1 if issuance volume spikes relative to baseline
-) -> float:
-    """
-    Normalise inputs, apply the pre-trained IsolationForest,
-    and return a risk score in [0, 1].
-    Higher score = more anomalous = higher fraud risk.
-    Threshold ≥ 0.8 → HIGH RISK (flagged).
-    """
-```
+- **Blockchain**: mint, transfer, retire, double-spend prevention, chain validation, tamper detection, credit history, chain stats, endorsement policy
+- **API**: input validation (blank fields, negative values, bad vintage years), endorsement enforcement, all CRUD endpoints, history and stats endpoints
+- **ML Model**: score range validation, suspicious vs normal project scoring, edge cases
 
----
-
-### Component 5 — REST API (`api/app.py`)
-
-**Purpose:** FastAPI layer that wires the AI model to the blockchain and exposes HTTP endpoints for the frontend.
-
-```python
-POST /credits/issue
-    """
-    Auto-compute risk features from project_type and tonnes,
-    call score_project(), and — if accepted — mint the credit
-    and mine a new block. Returns the credit_id, ai_risk_score,
-    computed_features, block_index, and block_hash.
-    """
-
-POST /credits/transfer
-    """
-    Validate ownership, apply a TRANSFER_CREDIT transaction,
-    and mine a new block.
-    """
-
-POST /credits/retire
-    """
-    Permanently retire a credit by applying a RETIRE_CREDIT
-    transaction and mining a block.
-    """
-
-GET /credits/{credit_id}
-    """
-    Look up the on-chain metadata for a credit by its ID.
-    """
-
-GET /chain/validate
-    """
-    Run is_chain_valid() and return True/False plus the chain length.
-    """
-
-GET /chain
-    """
-    Return a serialised view of all blocks in the chain.
-    """
+```bash
+PYTHONPATH=. python -m pytest tests/ -v
 ```
 
 ---
@@ -267,10 +307,8 @@ GET /chain
 
 | # | Name | Role |
 |---|------|------|
-| 1 | **Harpreet Kaur Brar** | Primary responsibility: chaincode and asset layer — asset modeling, project submission, and query functions. Additionally: frontend/UI development. |
+| 1 | **Harpreet Kaur Brar** | Chaincode and asset layer — asset modeling, project submission, and query functions. Additionally: frontend/UI development. |
 | 2 | **Sreeram Saravana Prasad** | Credit creation (minting logic), validation checks, and integration of AI risk scores. Additionally: frontend/UI development. |
 | 3 | **Asmi Umesh Pulgam** | Ownership updates and transaction handling. Additionally: project report creation. |
 | 4 | **Brijesh Kumar** | Credit retirement logic and double-spending prevention. Additionally: frontend/UI development. |
 | 5 | **Vandhana Vemuri** | Audit functions, history tracking, and endorsement policy configuration. Additionally: project report creation. |
-
-
