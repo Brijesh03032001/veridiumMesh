@@ -1,27 +1,44 @@
 """
-VeridiumAI — FastAPI Application
-Connects the AI risk-scoring model with the carbon credit blockchain.
+VeridiumAI — FastAPI Application (Ethereum edition)
+=====================================================
+The custom Python blockchain layer has been replaced with a Solidity smart
+contract (ethereum/contracts/CarbonCredit.sol) deployed on a local Hardhat
+node (http://127.0.0.1:8545).
+
+This backend is now responsible ONLY for:
+  1. Validating requests.
+  2. Running the Isolation Forest ML risk scorer.
+  3. Calling issueCredit() on the Solidity contract via web3.py.
+
+Transfer and Retire are handled directly by the Next.js frontend using
+MetaMask + ethers.js (see Claude.md section 10 – Step 4).
 """
 
 import uuid
-import time
+import json
+import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
+from web3 import Web3
 
-from blockchain.blockchain import Blockchain
-from blockchain.types import MINT_CREDIT, TRANSFER_CREDIT, RETIRE_CREDIT
-from blockchain.wallet import generate_keypair, sign_transaction
 from ml.model import score_project
 
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
 app = FastAPI(
-    title="VeridiumAI API",
-    version="1.0.0",
-    description="AI-powered carbon credit fraud detection on a blockchain.",
+    title="Veridium Mesh API",
+    version="2.0.0",
+    description=(
+        "AI-powered carbon credit fraud detection – Ethereum edition. "
+        "Issues credits via a Solidity smart contract on a local Hardhat node."
+    ),
 )
-bc = Blockchain(difficulty=2)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,10 +51,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Ethereum / web3.py setup
+# ---------------------------------------------------------------------------
+
+# Hardhat local node — always at this address when you run `npx hardhat node`
+HARDHAT_RPC = "http://127.0.0.1:8545"
+
+# Account #0 from the Hardhat node (publicly known test key — never use on mainnet)
+DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+DEPLOYER_PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+# Address where CarbonCredit.sol was deployed.
+# Re-run `npx hardhat run scripts/deploy.js --network localhost` if you restart
+# the Hardhat node — the node resets state on restart and this address changes.
+CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+
+# Load ABI from the Hardhat compilation artifact
+_ARTIFACT_PATH = Path(__file__).resolve().parent.parent / (
+    "ethereum/artifacts/contracts/CarbonCredit.sol/CarbonCredit.json"
+)
+
+
+def _load_contract():
+    """Connect to the local Hardhat node and return the contract instance."""
+    w3 = Web3(Web3.HTTPProvider(HARDHAT_RPC))
+    if not w3.is_connected():
+        raise RuntimeError(
+            "Cannot connect to Hardhat node at http://127.0.0.1:8545. "
+            "Run: cd ethereum && npx hardhat node"
+        )
+    with open(_ARTIFACT_PATH) as f:
+        artifact = json.load(f)
+    contract = w3.eth.contract(
+        address=Web3.to_checksum_address(CONTRACT_ADDRESS),
+        abi=artifact["abi"],
+    )
+    return w3, contract
+
+
+# Initialise once at startup (will raise if Hardhat node is not running)
+try:
+    _w3, _contract = _load_contract()
+except Exception as _e:
+    _w3 = None
+    _contract = None
+    print(f"[WARNING] Ethereum node not reachable at startup: {_e}")
+
+
+def get_contract():
+    """Return (w3, contract), reconnecting if needed."""
+    global _w3, _contract
+    if _w3 is None or not _w3.is_connected():
+        try:
+            _w3, _contract = _load_contract()
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Hardhat node unavailable: {e}",
+            )
+    return _w3, _contract
+
 
 # ---------------------------------------------------------------------------
-# Pydantic request schemas with input validation
+# Pydantic request schema
 # ---------------------------------------------------------------------------
+
 
 class MintRequest(BaseModel):
     project_id: str
@@ -45,15 +124,15 @@ class MintRequest(BaseModel):
     tonnes: int
     vintage_year: int
     owner_id: str
-    # Endorsement policy fields
-    developer_id: Optional[str] = None
-    regulator_id: Optional[str] = None
-    # Optional — if omitted the backend auto-computes them
+    # Endorsement policy — both required (mirrors Solidity contract require() checks)
+    developer_id: str
+    regulator_id: str
+    # Optional ML features — auto-computed from project_type/tonnes if absent
     r_ratio: Optional[float] = None
-    m_flag:  Optional[int]   = None
-    t_flag:  Optional[int]   = None
+    m_flag: Optional[int] = None
+    t_flag: Optional[int] = None
 
-    @field_validator("project_id", "project_type", "owner_id")
+    @field_validator("project_id", "project_type", "owner_id", "developer_id", "regulator_id")
     @classmethod
     def not_blank(cls, v: str, info) -> str:
         if not v or not v.strip():
@@ -75,287 +154,158 @@ class MintRequest(BaseModel):
         return v
 
 
-class TransferRequest(BaseModel):
-    credit_id:  str
-    from_owner: str
-    to_owner:   str
-    units:      int
-    signature:  str          # hex ECDSA signature over the tx body
-    public_key: str          # hex verifying key of from_owner
-
-    @field_validator("credit_id", "from_owner", "to_owner")
-    @classmethod
-    def not_blank(cls, v: str, info) -> str:
-        if not v or not v.strip():
-            raise ValueError(f"{info.field_name} must not be blank.")
-        return v.strip()
-
-    @field_validator("units")
-    @classmethod
-    def positive_units(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("units must be a positive integer.")
-        return v
-
-
-class RetireRequest(BaseModel):
-    credit_id:  str
-    owner_id:   str
-    signature:  str          # hex ECDSA signature over the tx body
-    public_key: str          # hex verifying key of owner
-
-    @field_validator("credit_id", "owner_id")
-    @classmethod
-    def not_blank(cls, v: str, info) -> str:
-        if not v or not v.strip():
-            raise ValueError(f"{info.field_name} must not be blank.")
-        return v.strip()
-
-
 # ---------------------------------------------------------------------------
 # Feature auto-computation
 # ---------------------------------------------------------------------------
 
 _HIGH_RISK_TYPES = {
-    "Renewable Energy", "Hydro", "Hydropower", "Wind", "Biomass",
-    "Fossil fuel replacement", "Solar", "Landfill Gas", "REDD+",
+    "Renewable Energy",
+    "Hydro",
+    "Hydropower",
+    "Wind",
+    "Biomass",
+    "Fossil fuel replacement",
+    "Solar",
+    "Landfill Gas",
+    "REDD+",
 }
 _PEER_AVERAGE_TONNES = 50_000
 
 
-def auto_compute_features(
-    project_type: str,
-    tonnes: int,
-) -> tuple[float, int, int]:
-    """Simulate feature engineering without a live database."""
-    m_flag  = 1 if project_type in _HIGH_RISK_TYPES else 0
+def auto_compute_features(project_type: str, tonnes: int) -> tuple[float, int, int]:
+    m_flag = 1 if project_type in _HIGH_RISK_TYPES else 0
     r_ratio = round(max(0.1, tonnes / _PEER_AVERAGE_TONNES), 4)
-    t_flag  = 1 if r_ratio > 3.0 else 0
+    t_flag = 1 if r_ratio > 3.0 else 0
     return r_ratio, m_flag, t_flag
 
 
 # ---------------------------------------------------------------------------
-# POST /credits/issue — Mint (endorsement + auto-scores + mines)
+# POST /credits/issue — Score with ML then call issueCredit() on-chain
 # ---------------------------------------------------------------------------
+
 
 @app.post("/credits/issue", status_code=201)
 def issue_credit(req: MintRequest):
-    # Endorsement policy: require both developer and regulator approval
-    try:
-        bc.check_endorsement(req.developer_id, req.regulator_id)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+    """
+    1. Auto-compute ML features (or use supplied ones).
+    2. Run Isolation Forest → risk_score ∈ [0, 1].
+    3. Scale score → uint256 by multiplying × 10_000.
+    4. Call issueCredit() on the Solidity contract.
+    5. Return credit_id, risk_score, and tx hash.
+    """
+    w3, contract = get_contract()
 
+    # Feature engineering
     vintage_age = 2026 - req.vintage_year
-
     if req.r_ratio is None or req.m_flag is None or req.t_flag is None:
         r_ratio, m_flag, t_flag = auto_compute_features(req.project_type, req.tonnes)
     else:
-        r_ratio = req.r_ratio
-        m_flag  = req.m_flag
-        t_flag  = req.t_flag
+        r_ratio, m_flag, t_flag = req.r_ratio, req.m_flag, req.t_flag
 
     computed_features = {
-        "R_ratio":     r_ratio,
+        "R_ratio": r_ratio,
         "Vintage_Age": vintage_age,
-        "M_flag":      m_flag,
-        "T_flag":      t_flag,
+        "M_flag": m_flag,
+        "T_flag": t_flag,
     }
 
-    risk_score = score_project(computed_features)
-    credit_id  = f"CRED-{uuid.uuid4().hex[:8].upper()}"
+    # ML scoring
+    risk_score: float = score_project(computed_features)
 
-    tx = {
-        "type":              MINT_CREDIT,
-        "credit_id":         credit_id,
-        "project_id":        req.project_id,
-        "project_type":      req.project_type,
-        "tonnes":            req.tonnes,
-        "vintage_year":      req.vintage_year,
-        "ai_risk_score":     risk_score,
-        "owner_id":          req.owner_id,
-        "developer_id":      req.developer_id,
-        "regulator_id":      req.regulator_id,
-        "computed_features": computed_features,
-        "timestamp":         time.time(),
-    }
+    # Scale to uint256 (Solidity has no floats)
+    ai_risk_score_int: int = int(round(risk_score * 10_000))
 
-    bc.add_transaction(tx)
-    block = bc.mine_pending_transactions()
+    credit_id = f"CRED-{uuid.uuid4().hex[:8].upper()}"
 
-    return {
-        "credit_id":         credit_id,
-        "ai_risk_score":     risk_score,
-        "computed_features": computed_features,
-        "owner_id":          req.owner_id,
-        "tonnes":            req.tonnes,
-        "block_index":       block.index,
-        "block_hash":        block.hash,
-        "status":            "minted",
-    }
-
-
-# ---------------------------------------------------------------------------
-# POST /credits/transfer
-# ---------------------------------------------------------------------------
-
-@app.post("/credits/transfer")
-def transfer_credit(req: TransferRequest):
-    tx_body = {
-        "type":       TRANSFER_CREDIT,
-        "credit_id":  req.credit_id,
-        "from_owner": req.from_owner,
-        "to_owner":   req.to_owner,
-        "units":      req.units,
-        "timestamp":  time.time(),
-    }
-    tx = {**tx_body, "signature": req.signature, "public_key": req.public_key}
+    # Build and send the transaction
     try:
-        bc.add_transaction(tx)
-        block = bc.mine_pending_transactions()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        nonce = w3.eth.get_transaction_count(DEPLOYER_ADDRESS)
+        tx = contract.functions.issueCredit(
+            credit_id,
+            req.tonnes,
+            req.developer_id,
+            req.regulator_id,
+            ai_risk_score_int,
+        ).build_transaction({
+            "from": DEPLOYER_ADDRESS,
+            "nonce": nonce,
+            "gas": 300_000,
+            "gasPrice": w3.eth.gas_price,
+        })
+        signed = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Contract call failed: {e}")
+
+    if receipt.status != 1:
+        raise HTTPException(status_code=500, detail="Transaction reverted on-chain.")
 
     return {
-        "credit_id":   req.credit_id,
-        "from_owner":  req.from_owner,
-        "to_owner":    req.to_owner,
-        "units":       req.units,
-        "block_index": block.index,
-        "block_hash":  block.hash,
-        "status":      "transferred",
+        "credit_id": credit_id,
+        "ai_risk_score": risk_score,
+        "ai_risk_score_scaled": ai_risk_score_int,
+        "computed_features": computed_features,
+        "owner_id": req.owner_id,
+        "tonnes": req.tonnes,
+        "tx_hash": tx_hash.hex(),
+        "block_number": receipt.blockNumber,
+        "contract_address": CONTRACT_ADDRESS,
+        "status": "minted",
     }
 
 
 # ---------------------------------------------------------------------------
-# POST /credits/retire
+# GET /credits/{credit_id} — Read credit state from the contract
 # ---------------------------------------------------------------------------
 
-@app.post("/credits/retire")
-def retire_credit(req: RetireRequest):
-    tx_body = {
-        "type":      RETIRE_CREDIT,
-        "credit_id": req.credit_id,
-        "owner_id":  req.owner_id,
-        "timestamp": time.time(),
-    }
-    tx = {**tx_body, "signature": req.signature, "public_key": req.public_key}
-    try:
-        bc.add_transaction(tx)
-        block = bc.mine_pending_transactions()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    return {
-        "credit_id":   req.credit_id,
-        "owner_id":    req.owner_id,
-        "block_index": block.index,
-        "block_hash":  block.hash,
-        "status":      "retired",
-    }
-
-
-# ---------------------------------------------------------------------------
-# POST /wallet/new — generate an ECDSA key pair
-# ---------------------------------------------------------------------------
-
-@app.post("/wallet/new")
-def new_wallet():
-    """
-    Returns a fresh ECDSA private/public key pair.
-    WARNING: Store the private key securely — the server never stores it.
-    """
-    return generate_keypair()
-
-
-# ---------------------------------------------------------------------------
-# POST /wallet/sign — sign a transaction body (dev/demo helper)
-# ---------------------------------------------------------------------------
-
-class SignRequest(BaseModel):
-    private_key: str
-    tx_body:     dict
-
-@app.post("/wallet/sign")
-def wallet_sign(req: SignRequest):
-    """Sign a tx_body dict with the given private key. For demo use only."""
-    sig = sign_transaction(req.tx_body, req.private_key)
-    return {"signature": sig}
-
-
-# ---------------------------------------------------------------------------
-# GET /credits/{credit_id}
-# ---------------------------------------------------------------------------
 
 @app.get("/credits/{credit_id}")
 def get_credit(credit_id: str):
-    if credit_id not in bc.credits:
+    """Fetch a credit's current state from the Solidity contract."""
+    w3, contract = get_contract()
+
+    try:
+        exists = contract.functions.doesCreditExist(credit_id).call()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Contract call failed: {e}")
+
+    if not exists:
         raise HTTPException(status_code=404, detail=f"Credit '{credit_id}' not found.")
 
-    ownership = {
-        owner_id: units
-        for (cid, owner_id), units in bc.ownership.items()
-        if cid == credit_id and units > 0
-    }
+    try:
+        (tonnes, dev_id, reg_id, ai_risk_score_int, owner, is_retired) = (
+            contract.functions.getCredit(credit_id).call()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Contract call failed: {e}")
 
     return {
         "credit_id": credit_id,
-        "details":   bc.credits[credit_id],
-        "ownership": ownership,
+        "tonnes": tonnes,
+        "developer_id": dev_id,
+        "regulator_id": reg_id,
+        "ai_risk_score": ai_risk_score_int / 10_000,
+        "ai_risk_score_scaled": ai_risk_score_int,
+        "owner": owner,
+        "is_retired": is_retired,
     }
 
 
 # ---------------------------------------------------------------------------
-# GET /credits/{credit_id}/history — Audit trail
+# GET /chain/stats — Read network stats from the Ethereum node
 # ---------------------------------------------------------------------------
 
-@app.get("/credits/{credit_id}/history")
-def get_credit_history(credit_id: str):
-    if credit_id not in bc.credits:
-        raise HTTPException(status_code=404, detail=f"Credit '{credit_id}' not found.")
-    return {
-        "credit_id": credit_id,
-        "history":   bc.get_credit_history(credit_id),
-    }
-
-
-# ---------------------------------------------------------------------------
-# GET /chain/stats — Live statistics
-# ---------------------------------------------------------------------------
 
 @app.get("/chain/stats")
 def get_chain_stats():
-    return bc.get_stats()
-
-
-# ---------------------------------------------------------------------------
-# GET /chain/validate
-# ---------------------------------------------------------------------------
-
-@app.get("/chain/validate")
-def validate_chain():
+    """Return basic stats from the connected Ethereum node."""
+    w3, _ = get_contract()
     return {
-        "chain_length": len(bc.chain),
-        "is_valid":     bc.is_chain_valid(),
+        "network": "Hardhat Local",
+        "chain_id": w3.eth.chain_id,
+        "latest_block": w3.eth.block_number,
+        "contract_address": CONTRACT_ADDRESS,
+        "node_url": HARDHAT_RPC,
     }
 
-
-# ---------------------------------------------------------------------------
-# GET /chain
-# ---------------------------------------------------------------------------
-
-@app.get("/chain")
-def get_chain():
-    return {
-        "length": len(bc.chain),
-        "chain": [
-            {
-                "index":          block.index,
-                "hash":           block.hash,
-                "previous_hash":  block.previous_hash,
-                "tx_count":       len(block.transactions),
-                "timestamp":      block.timestamp,
-            }
-            for block in bc.chain
-        ],
-    }

@@ -49,10 +49,20 @@ frontend/.pnp
 frontend/.pnp.*
 frontend/coverage/
 
+# Ethereum / Hardhat
+ethereum/node_modules/
+ethereum/artifacts/
+ethereum/cache/
+ethereum/ignition/deployments/
+
 # Data (large Excel file + runtime chain persistence)
 data/*.xlsx
 data/~$*
 data/chain.json
+chain_data.json
+
+# Project notes (internal)
+Claude.md
 
 # OS temp
 Thumbs.db

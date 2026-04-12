@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
+import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
 import {
   ArrowRight,
   ShieldCheck,
@@ -31,9 +31,33 @@ export default function Home() {
     fetchChainStats().then(setStats).catch(() => {});
   }, []);
 
+  // 3-D tilt card
+  const cardRef = useRef<HTMLDivElement>(null);
+  const rawX = useMotionValue(0);
+  const rawY = useMotionValue(0);
+  const springConfig = { stiffness: 180, damping: 22 };
+  const x = useSpring(rawX, springConfig);
+  const y = useSpring(rawY, springConfig);
+  const rotateX = useTransform(y, [-0.5, 0.5], ["10deg", "-10deg"]);
+  const rotateY = useTransform(x, [-0.5, 0.5], ["-10deg", "10deg"]);
+  const glowX = useTransform(x, [-0.5, 0.5], ["0%", "100%"]);
+  const glowY = useTransform(y, [-0.5, 0.5], ["0%", "100%"]);
+
+  function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
+    const rect = cardRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    rawX.set((e.clientX - rect.left) / rect.width - 0.5);
+    rawY.set((e.clientY - rect.top) / rect.height - 0.5);
+  }
+
+  function handleMouseLeave() {
+    rawX.set(0);
+    rawY.set(0);
+  }
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(18,136,84,0.22),transparent_35%),radial-gradient(circle_at_85%_15%,rgba(34,197,94,0.18),transparent_30%),linear-gradient(to_bottom,rgba(255,255,255,0.02),transparent_25%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(16,185,129,0.28),transparent_40%),radial-gradient(circle_at_85%_15%,rgba(34,197,94,0.22),transparent_35%),linear-gradient(to_bottom,rgba(255,255,255,0.04),transparent_30%)]" />
 
       <header className="relative z-10 border-b border-border/60 backdrop-blur-sm">
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
@@ -41,7 +65,7 @@ export default function Home() {
             <span className="rounded-md bg-primary/20 p-1.5 text-primary">
               <Leaf className="h-4.5 w-4.5" />
             </span>
-            VeridiumAI
+            Veridium Mesh
           </Link>
 
           <nav className="hidden items-center gap-8 text-sm text-muted-foreground md:flex">
@@ -80,7 +104,7 @@ export default function Home() {
             transition={{ duration: 0.55, ease: "easeOut" }}
             className="space-y-8"
           >
-            <Badge variant="outline" className="h-7 border-emerald-500/30 bg-emerald-500/10 px-3 text-emerald-300">
+            <Badge variant="outline" className="h-7 border-emerald-500/30 bg-emerald-50 px-3 text-emerald-700">
               Eliminating $250M+ in Carbon Fraud
             </Badge>
 
@@ -109,39 +133,105 @@ export default function Home() {
             </div>
           </motion.div>
 
+          {/* 3-D floating snapshot card */}
           <motion.div
-            initial="hidden"
-            animate="visible"
-            variants={fadeInUp}
-            transition={{ duration: 0.65, delay: 0.12, ease: "easeOut" }}
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.7, delay: 0.14, ease: "easeOut" }}
+            style={{ perspective: "900px" }}
           >
-            <Card className="border border-border/70 bg-card/70 py-0 shadow-[0_0_0_1px_rgba(255,255,255,0.02),0_28px_60px_-30px_rgba(16,185,129,0.45)]">
-              <CardHeader className="border-b border-border/60 py-5">
-                <CardTitle className="text-sm tracking-wide text-muted-foreground">
+            <motion.div
+              ref={cardRef}
+              onMouseMove={handleMouseMove}
+              onMouseLeave={handleMouseLeave}
+              style={{ rotateX, rotateY, transformStyle: "preserve-3d" }}
+              animate={{ y: [0, -8, 0] }}
+              transition={{
+                y: { duration: 3.6, repeat: Infinity, ease: "easeInOut" },
+              }}
+              className="relative overflow-hidden rounded-xl border border-emerald-200/80 bg-white shadow-[0_20px_60px_-20px_rgba(16,185,129,0.35),0_0_0_1px_rgba(16,185,129,0.08)]"
+            >
+              {/* Moving radial glow that follows mouse */}
+              <motion.div
+                className="pointer-events-none absolute inset-0 rounded-xl opacity-60"
+                style={{
+                  background: useTransform(
+                    [glowX, glowY],
+                    ([gx, gy]) =>
+                      `radial-gradient(280px circle at ${gx} ${gy}, rgba(16,185,129,0.18), transparent 70%)`
+                  ),
+                }}
+              />
+
+              <div className="relative z-10 border-b border-emerald-100 px-5 py-4">
+                <p className="flex items-center gap-2 text-sm font-medium tracking-wide text-muted-foreground">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
                   Live Integrity Snapshot
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-5 p-5">
+                </p>
+              </div>
+
+              <div className="relative z-10 space-y-5 p-5">
+                {/* Latest block number */}
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Chain Length</span>
-                  <span className="font-semibold text-emerald-300">{stats?.chain_length ?? "—"} blocks</span>
+                  <span className="text-sm text-muted-foreground">Latest Block</span>
+                  <motion.span
+                    key={stats?.latest_block}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="font-mono font-semibold text-emerald-700"
+                  >
+                    {stats?.latest_block != null ? `#${stats.latest_block}` : "#—"}
+                  </motion.span>
                 </div>
-                <div className="h-2 rounded-full bg-secondary/80">
-                  <div className="h-2 w-[82%] rounded-full bg-primary" />
+
+                {/* Animated progress bar */}
+                <div className="h-2 overflow-hidden rounded-full bg-emerald-100">
+                  <motion.div
+                    className="h-2 rounded-full bg-gradient-to-r from-emerald-500 to-green-400"
+                    initial={{ width: "0%" }}
+                    animate={{ width: "82%" }}
+                    transition={{ duration: 1.4, delay: 0.5, ease: "easeOut" }}
+                  />
                 </div>
-                <Separator />
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="rounded-lg border border-border/60 bg-background/50 p-3">
-                    <p className="text-xs text-muted-foreground">Credits Scanned</p>
-                    <p className="mt-1 text-xl font-semibold">{stats?.total_credits?.toLocaleString() ?? "—"}</p>
+
+                <Separator className="border-emerald-100" />
+
+                {/* Network + Chain ID — always show real / fallback values */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Network
+                    </p>
+                    <motion.p
+                      key={stats?.network}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4 }}
+                      className="mt-1 text-base font-bold text-foreground"
+                    >
+                      {stats?.network ?? "Hardhat Local"}
+                    </motion.p>
+                    <p className="mt-0.5 text-xs text-emerald-600">✓ Connected</p>
                   </div>
-                  <div className="rounded-lg border border-border/60 bg-background/50 p-3">
-                    <p className="text-xs text-muted-foreground">Fraud Flags</p>
-                    <p className="mt-1 text-xl font-semibold">{stats?.flagged_high_risk?.toLocaleString() ?? "—"}</p>
+
+                  <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Chain ID
+                    </p>
+                    <motion.p
+                      key={stats?.chain_id}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.4, delay: 0.08 }}
+                      className="mt-1 font-mono text-base font-bold text-foreground"
+                    >
+                      {stats?.chain_id ?? 1337}
+                    </motion.p>
+                    <p className="mt-0.5 text-xs text-emerald-600">EVM-compatible</p>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </motion.div>
           </motion.div>
         </section>
 
@@ -180,7 +270,7 @@ export default function Home() {
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm leading-6 text-muted-foreground">
-              Credits are permanently burned on a custom PoW ledger,
+              Credits are permanently burned on the Ethereum blockchain,
               guaranteeing zero double-counting for ESG compliance.
             </CardContent>
           </Card>

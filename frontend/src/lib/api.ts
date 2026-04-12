@@ -19,69 +19,36 @@ export type ComputedFeatures = {
   T_flag: number;
 };
 
-export type TransferPayload = {
-  credit_id: string;
-  from_owner: string;
-  to_owner: string;
-  units: number;
-};
-
-export type RetirePayload = {
-  credit_id: string;
-  owner_id: string;
-};
-
 export type MintResponse = {
   credit_id: string;
   ai_risk_score: number;
+  ai_risk_score_scaled: number;
   computed_features: ComputedFeatures;
   owner_id: string;
   tonnes: number;
-  block_index: number;
-  block_hash: string;
+  tx_hash: string;
+  block_number: number;
+  contract_address: string;
   status: string;
 };
 
 export type CreditResponse = {
   credit_id: string;
-  details: {
-    tonnes: number;
-    project_type: string;
-    vintage_year: number;
-    ai_risk_score: number;
-    status: string;
-  };
-  ownership: Record<string, number>;
-};
-
-export type CreditHistoryResponse = {
-  credit_id: string;
-  history: Array<Record<string, unknown>>;
+  tonnes: number;
+  developer_id: string;
+  regulator_id: string;
+  ai_risk_score: number;
+  ai_risk_score_scaled: number;
+  owner: string;
+  is_retired: boolean;
 };
 
 export type ChainStatsResponse = {
-  total_credits: number;
-  active_credits: number;
-  retired_credits: number;
-  flagged_high_risk: number;
-  total_transactions: number;
-  chain_length: number;
-};
-
-export type ChainResponse = {
-  length: number;
-  chain: Array<{
-    index: number;
-    hash: string;
-    previous_hash: string;
-    tx_count: number;
-    timestamp: number;
-  }>;
-};
-
-export type ChainValidationResponse = {
-  chain_length: number;
-  is_valid: boolean;
+  network: string;
+  chain_id: number;
+  latest_block: number;
+  contract_address: string;
+  node_url: string;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -115,36 +82,10 @@ export function issueCredit(payload: MintPayload) {
   });
 }
 
-export function transferCredit(payload: TransferPayload) {
-  return apiRequest<{ status: string }>("/credits/transfer", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-export function retireCredit(payload: RetirePayload) {
-  return apiRequest<{ status: string }>("/credits/retire", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
 export function fetchCredit(creditId: string) {
   return apiRequest<CreditResponse>(`/credits/${encodeURIComponent(creditId)}`);
 }
 
-export function fetchCreditHistory(creditId: string) {
-  return apiRequest<CreditHistoryResponse>(`/credits/${encodeURIComponent(creditId)}/history`);
-}
-
 export function fetchChainStats() {
   return apiRequest<ChainStatsResponse>("/chain/stats");
-}
-
-export function fetchChain() {
-  return apiRequest<ChainResponse>("/chain");
-}
-
-export function fetchChainValidation() {
-  return apiRequest<ChainValidationResponse>("/chain/validate");
 }
