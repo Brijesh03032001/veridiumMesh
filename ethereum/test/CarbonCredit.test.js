@@ -1,149 +1,139 @@
-/**
- * CarbonCredit.test.js — Basic unit tests for CarbonCredit.sol
- *
- * Run:  npx hardhat test
- */
-
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 describe("CarbonCredit", function () {
-  let carbonCredit;
-  let owner, addr1, addr2;
+  let contract;
+  let developer, buyer, stranger;
 
   beforeEach(async function () {
-    [owner, addr1, addr2] = await ethers.getSigners();
-    const CarbonCredit = await ethers.getContractFactory("CarbonCredit");
-    carbonCredit = await CarbonCredit.deploy();
-    await carbonCredit.waitForDeployment();
+    [, developer, buyer, stranger] = await ethers.getSigners();
+    const Factory = await ethers.getContractFactory("CarbonCredit");
+    contract = await Factory.deploy();
+    await contract.waitForDeployment();
   });
 
-  // -------------------------------------------------------------------------
-  // issueCredit
-  // -------------------------------------------------------------------------
-
   describe("issueCredit", function () {
-    it("should issue a credit and emit CreditIssued event", async function () {
+    it("emits CreditIssued and stores correct data", async function () {
       await expect(
-        carbonCredit.issueCredit(
-          "CRED-TEST01",
-          1000,
-          "DEV-001",
-          "REG-001",
-          2464  // 0.2464 × 10000
-        )
+        contract.issueCredit("CRED-001", 1000, "DEV-001", "REG-001", 2500, developer.address)
       )
-        .to.emit(carbonCredit, "CreditIssued")
-        .withArgs("CRED-TEST01", owner.address, 1000, 2464, "DEV-001", "REG-001");
-    });
+        .to.emit(contract, "CreditIssued")
+        .withArgs("CRED-001", developer.address, 1000, 2500, "DEV-001", "REG-001");
 
-    it("should store correct credit data", async function () {
-      await carbonCredit.issueCredit("CRED-TEST02", 500, "DEV-002", "REG-002", 8451);
-      const credit = await carbonCredit.getCredit("CRED-TEST02");
-      expect(credit.tonnes).to.equal(500);
-      expect(credit.aiRiskScore).to.equal(8451);
-      expect(credit.owner).to.equal(owner.address);
+      const credit = await contract.getCredit("CRED-001");
+      expect(credit.tonnes).to.equal(1000);
+      expect(credit.owner).to.equal(developer.address);
       expect(credit.isRetired).to.equal(false);
     });
 
-    it("should revert on duplicate creditId", async function () {
-      await carbonCredit.issueCredit("CRED-DUP", 100, "D", "R", 1000);
+    it("reverts on duplicate creditId", async function () {
+      await contract.issueCredit("CRED-DUP", 100, "D", "R", 1000, developer.address);
       await expect(
-        carbonCredit.issueCredit("CRED-DUP", 100, "D", "R", 1000)
+        contract.issueCredit("CRED-DUP", 100, "D", "R", 1000, developer.address)
       ).to.be.revertedWith("CarbonCredit: creditId already exists");
     });
 
-    it("should revert when developerId is empty (endorsement policy)", async function () {
+    it("reverts when called by non-registrar", async function () {
       await expect(
-        carbonCredit.issueCredit("CRED-NDEV", 100, "", "REG-001", 1000)
-      ).to.be.revertedWith("CarbonCredit: developerId required (endorsement)");
+        contract.connect(stranger).issueCredit("CRED-X", 100, "D", "R", 1000, developer.address)
+      ).to.be.revertedWith("CarbonCredit: caller is not the registrar");
     });
 
-    it("should revert when regulatorId is empty (endorsement policy)", async function () {
+    it("reverts when developerId is empty", async function () {
       await expect(
-        carbonCredit.issueCredit("CRED-NREG", 100, "DEV-001", "", 1000)
-      ).to.be.revertedWith("CarbonCredit: regulatorId required (endorsement)");
+        contract.issueCredit("CRED-NDEV", 100, "", "REG-001", 1000, developer.address)
+      ).to.be.revertedWith("CarbonCredit: developerId required");
     });
 
-    it("should revert when tonnes is zero", async function () {
+    it("reverts when regulatorId is empty", async function () {
       await expect(
-        carbonCredit.issueCredit("CRED-ZERO", 0, "D", "R", 0)
+        contract.issueCredit("CRED-NREG", 100, "DEV-001", "", 1000, developer.address)
+      ).to.be.revertedWith("CarbonCredit: regulatorId required");
+    });
+
+    it("reverts when tonnes is zero", async function () {
+      await expect(
+        contract.issueCredit("CRED-ZERO", 0, "D", "R", 1000, developer.address)
       ).to.be.revertedWith("CarbonCredit: tonnes must be positive");
+    });
+
+    it("reverts when risk score is too high", async function () {
+      await expect(
+        contract.issueCredit("CRED-RISK", 100, "D", "R", 7500, developer.address)
+      ).to.be.revertedWith("CarbonCredit: risk score too high, credit rejected");
+    });
+
+    it("reverts when owner is zero address", async function () {
+      await expect(
+        contract.issueCredit("CRED-ZERO-ADDR", 100, "D", "R", 1000, ethers.ZeroAddress)
+      ).to.be.revertedWith("CarbonCredit: owner cannot be zero address");
     });
   });
 
-  // -------------------------------------------------------------------------
-  // transferCredit
-  // -------------------------------------------------------------------------
-
   describe("transferCredit", function () {
     beforeEach(async function () {
-      await carbonCredit.issueCredit("CRED-T01", 1000, "DEV", "REG", 5000);
+      await contract.issueCredit("CRED-T01", 1000, "DEV", "REG", 5000, developer.address);
     });
 
-    it("should transfer ownership and emit CreditTransferred event", async function () {
-      await expect(carbonCredit.transferCredit("CRED-T01", addr1.address))
-        .to.emit(carbonCredit, "CreditTransferred")
-        .withArgs("CRED-T01", owner.address, addr1.address);
+    it("transfers ownership and emits CreditTransferred", async function () {
+      await expect(contract.connect(developer).transferCredit("CRED-T01", buyer.address))
+        .to.emit(contract, "CreditTransferred")
+        .withArgs("CRED-T01", developer.address, buyer.address);
 
-      const credit = await carbonCredit.getCredit("CRED-T01");
-      expect(credit.owner).to.equal(addr1.address);
+      const credit = await contract.getCredit("CRED-T01");
+      expect(credit.owner).to.equal(buyer.address);
     });
 
-    it("should revert when caller is not the owner", async function () {
+    it("reverts when caller is not the owner", async function () {
       await expect(
-        carbonCredit.connect(addr1).transferCredit("CRED-T01", addr2.address)
+        contract.connect(stranger).transferCredit("CRED-T01", buyer.address)
       ).to.be.revertedWith("CarbonCredit: caller is not the credit owner");
     });
 
-    it("should revert transfer to zero address", async function () {
+    it("reverts transfer to zero address", async function () {
       await expect(
-        carbonCredit.transferCredit("CRED-T01", ethers.ZeroAddress)
+        contract.connect(developer).transferCredit("CRED-T01", ethers.ZeroAddress)
       ).to.be.revertedWith("CarbonCredit: cannot transfer to zero address");
     });
 
-    it("should revert transfer to self", async function () {
+    it("reverts transfer to self", async function () {
       await expect(
-        carbonCredit.transferCredit("CRED-T01", owner.address)
+        contract.connect(developer).transferCredit("CRED-T01", developer.address)
       ).to.be.revertedWith("CarbonCredit: cannot transfer to yourself");
     });
   });
 
-  // -------------------------------------------------------------------------
-  // retireCredit
-  // -------------------------------------------------------------------------
-
   describe("retireCredit", function () {
     beforeEach(async function () {
-      await carbonCredit.issueCredit("CRED-R01", 1000, "DEV", "REG", 3000);
+      await contract.issueCredit("CRED-R01", 1000, "DEV", "REG", 3000, developer.address);
     });
 
-    it("should retire a credit and emit CreditRetired event", async function () {
-      await expect(carbonCredit.retireCredit("CRED-R01"))
-        .to.emit(carbonCredit, "CreditRetired")
-        .withArgs("CRED-R01", owner.address);
+    it("retires a credit and emits CreditRetired", async function () {
+      await expect(contract.connect(developer).retireCredit("CRED-R01"))
+        .to.emit(contract, "CreditRetired")
+        .withArgs("CRED-R01", developer.address);
 
-      const credit = await carbonCredit.getCredit("CRED-R01");
+      const credit = await contract.getCredit("CRED-R01");
       expect(credit.isRetired).to.equal(true);
     });
 
-    it("should revert transfer of a retired credit", async function () {
-      await carbonCredit.retireCredit("CRED-R01");
+    it("reverts transfer after retirement", async function () {
+      await contract.connect(developer).retireCredit("CRED-R01");
       await expect(
-        carbonCredit.transferCredit("CRED-R01", addr1.address)
+        contract.connect(developer).transferCredit("CRED-R01", buyer.address)
       ).to.be.revertedWith("CarbonCredit: credit is already retired");
     });
 
-    it("should revert double-retire", async function () {
-      await carbonCredit.retireCredit("CRED-R01");
+    it("reverts double retire", async function () {
+      await contract.connect(developer).retireCredit("CRED-R01");
       await expect(
-        carbonCredit.retireCredit("CRED-R01")
+        contract.connect(developer).retireCredit("CRED-R01")
       ).to.be.revertedWith("CarbonCredit: credit is already retired");
     });
 
-    it("should revert when caller is not owner", async function () {
+    it("reverts when caller is not the owner", async function () {
       await expect(
-        carbonCredit.connect(addr1).retireCredit("CRED-R01")
+        contract.connect(stranger).retireCredit("CRED-R01")
       ).to.be.revertedWith("CarbonCredit: caller is not the credit owner");
     });
   });
