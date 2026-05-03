@@ -25,11 +25,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Hardhat defaults. Override with env vars if you redeploy.
 HARDHAT_RPC = os.getenv("HARDHAT_RPC", "http://127.0.0.1:8545")
 DEPLOYER_ADDRESS = os.getenv("DEPLOYER_ADDRESS", "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
 DEPLOYER_KEY = os.getenv("DEPLOYER_PRIVATE_KEY", "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
 CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS", "0x5FbDB2315678afecb367f032d93F642f64180aa3")
 
+# These are the Hardhat accounts registered as Developer and Regulator in deploy.js
 DEVELOPER_SIGNER_ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 DEVELOPER_SIGNER_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 REGULATOR_SIGNER_ADDRESS = "0x976EA74026E726554dB657fA54763abd0C3a0aa9"
@@ -54,9 +56,13 @@ _PEER_AVG_TONNES = 50_000
 
 REGULATOR_ADDRESS = "0x976EA74026E726554dB657fA54763abd0C3a0aa9"
 
+# credits sit here until the regulator approves them
 _pending: dict[str, dict] = {}
 
 
+# Signs the endorsement hash the same way the Solidity contract expects it.
+# Packs creditId + tonnes + owner as raw bytes, hashes with keccak, then
+# wraps it with the EIP191 prefix before signing.
 def _sign_endorsement(credit_id: str, tonnes: int, owner: str, private_key: str) -> bytes:
     packed = credit_id.encode("utf-8") + tonnes.to_bytes(32, "big") + bytes.fromhex(owner[2:])
     msg_hash = Web3.keccak(packed)
@@ -65,9 +71,12 @@ def _sign_endorsement(credit_id: str, tonnes: int, owner: str, private_key: str)
     return bytes(signed.signature)
 
 
+# Must match the Solidity POW_DIFFICULTY constant (top 8 bits = 0)
 _POW_DIFFICULTY = (2**256 - 1) >> 8
 
 
+# Brute forces a nonce so that keccak256(creditId ++ nonce) <= difficulty.
+# Takes about 256 tries on average, well under a second.
 def mine_pow_nonce(credit_id: str) -> int:
     nonce = 0
     while True:
@@ -78,6 +87,7 @@ def mine_pow_nonce(credit_id: str) -> int:
         nonce += 1
 
 
+# Computes the same leaf hash the Solidity contract uses for its Merkle tree
 def _credit_leaf(credit_id: str, tonnes: int, owner: str, ai_risk_score_int: int) -> bytes:
     packed = (
         credit_id.encode("utf-8")
@@ -97,6 +107,8 @@ def _next_power_of_2(n: int) -> int:
     return result
 
 
+# Builds a Merkle proof for the leaf at target_index. Sorts sibling pairs
+# before hashing so it matches the Solidity side exactly.
 def _build_merkle_proof(all_leaves: list[bytes], target_index: int) -> tuple[bytes, list[bytes]]:
     n = len(all_leaves)
     if n == 0:
@@ -209,6 +221,8 @@ def get_stakeholders():
 
 @app.post("/credits/issue", status_code=201)
 def issue_credit(req: MintRequest):
+    # scores the project with the AI model, mines a PoW nonce, gets both
+    # endorsement signatures, then sends the whole thing to the contract
     w3, contract = get_contract()
 
     owner_address = STAKEHOLDERS.get(req.owner_id)
@@ -293,6 +307,8 @@ def issue_credit(req: MintRequest):
 
 @app.post("/credits/pending", status_code=201)
 def submit_pending(req: MintRequest):
+    # developer submits a credit request. We score it with the AI model
+    # but don't mint yet. It sits in _pending until the regulator approves.
     owner_address = STAKEHOLDERS.get(req.owner_id)
     if not owner_address:
         raise HTTPException(status_code=400, detail=f"Unknown stakeholder '{req.owner_id}'.")
@@ -371,6 +387,8 @@ def list_pending():
 
 @app.post("/credits/approve/{pending_id}", status_code=201)
 def approve_credit(pending_id: str, req: ApproveRequest):
+    # regulator approves a pending credit. This triggers the actual on chain
+    # mint with PoW, dual signatures, and everything.
     pending = _pending.get(pending_id)
     if not pending:
         raise HTTPException(status_code=404, detail=f"Pending credit '{pending_id}' not found.")
@@ -556,6 +574,8 @@ def get_chain_events():
 
 @app.get("/credits/{credit_id}/proof")
 def get_credit_proof(credit_id: str):
+    # rebuilds the full leaf list from on chain events, finds the target credit,
+    # and computes a Merkle inclusion proof you can pass to verifyCredit()
     _, contract = get_contract()
 
     if not contract.functions.doesCreditExist(credit_id).call():

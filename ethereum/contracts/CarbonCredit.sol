@@ -6,6 +6,10 @@ import "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
+// Each carbon credit is an ERC721 NFT. Minting requires proof of work,
+// dual ECDSA signatures (one developer + one regulator), and the AI risk
+// score must be below the rejection threshold. Every minted credit becomes
+// a leaf in an on chain Merkle tree so anyone can verify inclusion later.
 contract CarbonCredit is ERC721 {
 
     address public admin;
@@ -13,6 +17,7 @@ contract CarbonCredit is ERC721 {
     mapping(address => bool) public isDeveloper;
     mapping(address => bool) public isRegulator;
 
+    // Top 8 bits of the hash must be zero. Roughly 256 attempts on average.
     uint256 public constant POW_DIFFICULTY = type(uint256).max >> 8;
 
     bytes32[] private _leafHashes;
@@ -25,7 +30,7 @@ contract CarbonCredit is ERC721 {
         string  developerId;
         string  regulatorId;
         uint256 aiRiskScore;
-        address mintedTo;
+        address mintedTo;       // we keep the original owner so the Merkle leaf stays stable after transfers
         bool    isRetired;
     }
 
@@ -66,6 +71,7 @@ contract CarbonCredit is ERC721 {
         _;
     }
 
+    // The admin can grant and revoke roles so no single address controls everything
     function addRegistrar(address _addr) external onlyAdmin {
         isRegistrar[_addr] = true;
         emit RegistrarAdded(_addr);
@@ -86,6 +92,7 @@ contract CarbonCredit is ERC721 {
         emit RegulatorAdded(_addr);
     }
 
+    // Builds the EIP191 hash that both the developer and regulator need to sign off chain
     function endorsementHash(
         string  memory _creditId,
         uint256        _tonnes,
@@ -95,6 +102,8 @@ contract CarbonCredit is ERC721 {
         return MessageHashUtils.toEthSignedMessageHash(raw);
     }
 
+    // Main minting function. Checks PoW, validates inputs, recovers both
+    // signatures, stores the credit, mints the NFT, and updates the Merkle tree.
     function issueCredit(
         string  memory _creditId,
         uint256        _tonnes,
@@ -106,6 +115,7 @@ contract CarbonCredit is ERC721 {
         bytes   memory _developerSig,
         bytes   memory _regulatorSig
     ) external onlyRegistrar {
+        // proof of work check
         require(
             uint256(keccak256(abi.encodePacked(_creditId, _nonce))) <= POW_DIFFICULTY,
             "CarbonCredit: proof of work not satisfied"
@@ -118,6 +128,7 @@ contract CarbonCredit is ERC721 {
         require(_aiRiskScore < 7000,            "CarbonCredit: risk score too high, credit rejected");
         require(_owner != address(0),           "CarbonCredit: owner cannot be zero address");
 
+        // recover who actually signed and make sure they have the right roles
         bytes32 hash       = endorsementHash(_creditId, _tonnes, _owner);
         address devSigner  = ECDSA.recover(hash, _developerSig);
         address regSigner  = ECDSA.recover(hash, _regulatorSig);
@@ -135,11 +146,13 @@ contract CarbonCredit is ERC721 {
         });
         _exists[_creditId] = true;
 
+        // mint the NFT
         uint256 tokenId = _nextTokenId++;
         creditToTokenId[_creditId] = tokenId;
         tokenToCreditId[tokenId]   = _creditId;
         _safeMint(_owner, tokenId);
 
+        // add this credit as a leaf and recompute the Merkle root
         bytes32 leaf = keccak256(abi.encodePacked(_creditId, _tonnes, _owner, _aiRiskScore));
         _leafHashes.push(leaf);
         merkleRoot = _computeMerkleRoot();
@@ -160,6 +173,7 @@ contract CarbonCredit is ERC721 {
         emit CreditTransferred(_creditId, msg.sender, _to);
     }
 
+    // Burning is permanent. We burn the NFT first then mark it retired.
     function retireCredit(string memory _creditId) external {
         require(_exists[_creditId],             "CarbonCredit: credit does not exist");
         require(!_credits[_creditId].isRetired, "CarbonCredit: credit is already retired");
@@ -171,6 +185,7 @@ contract CarbonCredit is ERC721 {
         emit CreditRetired(_creditId, msg.sender);
     }
 
+    // We block the standard ERC721 transfer functions so people have to go through transferCredit
     function transferFrom(address, address, uint256) public pure override {
         revert("CarbonCredit: use transferCredit()");
     }
@@ -194,6 +209,7 @@ contract CarbonCredit is ERC721 {
         require(_exists[_creditId], "CarbonCredit: credit does not exist");
         Credit storage c = _credits[_creditId];
         uint256 tid = creditToTokenId[_creditId];
+        // ownerOf would revert for burned tokens so we return address(0) for retired ones
         address cur = c.isRetired ? address(0) : ownerOf(tid);
         return (c.tonnes, c.developerId, c.regulatorId, c.aiRiskScore, cur, c.isRetired, tid);
     }
@@ -211,6 +227,7 @@ contract CarbonCredit is ERC721 {
         return creditToTokenId[_creditId];
     }
 
+    // Uses mintedTo (not current owner) so the leaf hash doesn't change when credits get transferred
     function getCreditLeafHash(string memory _creditId)
         external view
         returns (bytes32)
@@ -227,6 +244,8 @@ contract CarbonCredit is ERC721 {
         return MerkleProof.verify(proof, merkleRoot, leaf);
     }
 
+    // Rebuilds the full Merkle root from all leaves. Pairs are sorted before
+    // hashing so the tree is order independent (matches how OZ MerkleProof works).
     function _computeMerkleRoot() internal view returns (bytes32) {
         uint256 n = _leafHashes.length;
         if (n == 0) return bytes32(0);

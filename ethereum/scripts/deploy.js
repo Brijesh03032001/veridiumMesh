@@ -1,5 +1,6 @@
 const hre = require("hardhat");
 
+// Hardhat account #1 is our developer signer, account #6 is the regulator
 const DEVELOPER_ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const REGULATOR_ADDRESS = "0x976EA74026E726554dB657fA54763abd0C3a0aa9";
 
