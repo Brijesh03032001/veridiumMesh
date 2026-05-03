@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from web3 import Web3
 
-from ml.model import score_project
+from ml.model import scoreProject
 
 
 app = FastAPI(title="Veridium Mesh API", version="3.0.0")
@@ -37,7 +37,7 @@ DEVELOPER_SIGNER_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f460
 REGULATOR_SIGNER_ADDRESS = "0x976EA74026E726554dB657fA54763abd0C3a0aa9"
 REGULATOR_SIGNER_KEY = "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e"
 
-_ARTIFACT = Path(__file__).resolve().parent.parent / \
+artifactPath = Path(__file__).resolve().parent.parent / \
     "ethereum/artifacts/contracts/CarbonCredit.sol/CarbonCredit.json"
 
 STAKEHOLDERS = {
@@ -48,57 +48,57 @@ STAKEHOLDERS = {
     "BlueSky Offset Fund":   "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
 }
 
-_HIGH_RISK_TYPES = {
+highRiskTypes = {
     "Renewable Energy", "Hydro", "Hydropower", "Wind", "Biomass",
     "Fossil fuel replacement", "Solar", "Landfill Gas", "REDD+",
 }
-_PEER_AVG_TONNES = 50_000
+peerAvgTonnes = 50_000
 
 REGULATOR_ADDRESS = "0x976EA74026E726554dB657fA54763abd0C3a0aa9"
 
 # credits sit here until the regulator approves them
-_pending: dict[str, dict] = {}
+pendingCredits: dict[str, dict] = {}
 
 
 # Signs the endorsement hash the same way the Solidity contract expects it.
 # Packs creditId + tonnes + owner as raw bytes, hashes with keccak, then
 # wraps it with the EIP191 prefix before signing.
-def _sign_endorsement(credit_id: str, tonnes: int, owner: str, private_key: str) -> bytes:
-    packed = credit_id.encode("utf-8") + tonnes.to_bytes(32, "big") + bytes.fromhex(owner[2:])
-    msg_hash = Web3.keccak(packed)
-    message = encode_defunct(primitive=bytes(msg_hash))
-    signed = Account.sign_message(message, private_key=private_key)
+def signEndorsement(creditId: str, tonnes: int, owner: str, privateKey: str) -> bytes:
+    packed = creditId.encode("utf-8") + tonnes.to_bytes(32, "big") + bytes.fromhex(owner[2:])
+    msgHash = Web3.keccak(packed)
+    message = encode_defunct(primitive=bytes(msgHash))
+    signed = Account.sign_message(message, private_key=privateKey)
     return bytes(signed.signature)
 
 
 # Must match the Solidity POW_DIFFICULTY constant (top 8 bits = 0)
-_POW_DIFFICULTY = (2**256 - 1) >> 8
+powDifficulty = (2**256 - 1) >> 8
 
 
 # Brute forces a nonce so that keccak256(creditId ++ nonce) <= difficulty.
 # Takes about 256 tries on average, well under a second.
-def mine_pow_nonce(credit_id: str) -> int:
+def minePowNonce(creditId: str) -> int:
     nonce = 0
     while True:
-        packed = credit_id.encode("utf-8") + nonce.to_bytes(32, "big")
+        packed = creditId.encode("utf-8") + nonce.to_bytes(32, "big")
         h = int(Web3.keccak(packed).hex(), 16)
-        if h <= _POW_DIFFICULTY:
+        if h <= powDifficulty:
             return nonce
         nonce += 1
 
 
 # Computes the same leaf hash the Solidity contract uses for its Merkle tree
-def _credit_leaf(credit_id: str, tonnes: int, owner: str, ai_risk_score_int: int) -> bytes:
+def creditLeaf(creditId: str, tonnes: int, owner: str, aiRiskScoreInt: int) -> bytes:
     packed = (
-        credit_id.encode("utf-8")
+        creditId.encode("utf-8")
         + tonnes.to_bytes(32, "big")
         + bytes.fromhex(owner[2:])
-        + ai_risk_score_int.to_bytes(32, "big")
+        + aiRiskScoreInt.to_bytes(32, "big")
     )
     return bytes(Web3.keccak(packed))
 
 
-def _next_power_of_2(n: int) -> int:
+def nextPowerOf2(n: int) -> int:
     if n <= 1:
         return 1
     result = 1
@@ -107,64 +107,64 @@ def _next_power_of_2(n: int) -> int:
     return result
 
 
-# Builds a Merkle proof for the leaf at target_index. Sorts sibling pairs
+# Builds a Merkle proof for the leaf at targetIndex. Sorts sibling pairs
 # before hashing so it matches the Solidity side exactly.
-def _build_merkle_proof(all_leaves: list[bytes], target_index: int) -> tuple[bytes, list[bytes]]:
-    n = len(all_leaves)
+def buildMerkleProof(allLeaves: list[bytes], targetIndex: int) -> tuple[bytes, list[bytes]]:
+    n = len(allLeaves)
     if n == 0:
         return bytes(32), []
     if n == 1:
-        return all_leaves[0], []
+        return allLeaves[0], []
 
-    size = _next_power_of_2(n)
-    nodes = list(all_leaves) + [bytes(32)] * (size - n)
+    size = nextPowerOf2(n)
+    nodes = list(allLeaves) + [bytes(32)] * (size - n)
 
     proof: list[bytes] = []
-    idx = target_index
-    current_size = size
+    idx = targetIndex
+    currentSize = size
 
-    while current_size > 1:
+    while currentSize > 1:
         sibling = idx ^ 1
         proof.append(nodes[sibling])
 
-        half = current_size >> 1
-        new_nodes: list[bytes] = []
+        half = currentSize >> 1
+        newNodes: list[bytes] = []
         for i in range(half):
             a, b = nodes[2 * i], nodes[2 * i + 1]
             combined = (a + b) if a < b else (b + a)
-            new_nodes.append(bytes(Web3.keccak(combined)))
-        nodes = new_nodes
-        current_size = half
+            newNodes.append(bytes(Web3.keccak(combined)))
+        nodes = newNodes
+        currentSize = half
         idx >>= 1
 
     return nodes[0], proof
 
 
-def _connect():
+def connectToChain():
     w3 = Web3(Web3.HTTPProvider(HARDHAT_RPC))
     if not w3.is_connected():
         raise RuntimeError(f"Cannot reach Hardhat node at {HARDHAT_RPC}")
-    with open(_ARTIFACT) as f:
+    with open(artifactPath) as f:
         abi = json.load(f)["abi"]
     contract = w3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=abi)
     return w3, contract
 
 
 try:
-    _w3, _contract = _connect()
-except Exception as _e:
-    _w3 = _contract = None
-    print(f"[WARNING] Ethereum node not available at startup: {_e}")
+    cachedW3, cachedContract = connectToChain()
+except Exception as e:
+    cachedW3 = cachedContract = None
+    print(f"[WARNING] Ethereum node not available at startup: {e}")
 
 
-def get_contract():
-    global _w3, _contract
-    if _w3 is None or not _w3.is_connected():
+def getContract():
+    global cachedW3, cachedContract
+    if cachedW3 is None or not cachedW3.is_connected():
         try:
-            _w3, _contract = _connect()
+            cachedW3, cachedContract = connectToChain()
         except Exception as e:
             raise HTTPException(status_code=503, detail=str(e))
-    return _w3, _contract
+    return cachedW3, cachedContract
 
 
 class MintRequest(BaseModel):
@@ -182,21 +182,21 @@ class MintRequest(BaseModel):
 
     @field_validator("project_id", "project_type", "owner_id", "developer_id", "regulator_id")
     @classmethod
-    def not_blank(cls, v: str, info) -> str:
+    def notBlank(cls, v: str, info) -> str:
         if not v or not v.strip():
             raise ValueError(f"{info.field_name} must not be blank.")
         return v.strip()
 
     @field_validator("tonnes")
     @classmethod
-    def positive_tonnes(cls, v: int) -> int:
+    def positiveTonnes(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("tonnes must be positive.")
         return v
 
     @field_validator("vintage_year")
     @classmethod
-    def valid_vintage(cls, v: int) -> int:
+    def validVintage(cls, v: int) -> int:
         if v < 1990 or v > 2026:
             raise ValueError("vintage_year must be between 1990 and 2026.")
         return v
@@ -207,98 +207,98 @@ class ApproveRequest(BaseModel):
     signature:         str
 
 
-def _compute_features(project_type: str, tonnes: int) -> tuple[float, int, int]:
-    r_ratio = round(max(0.1, tonnes / _PEER_AVG_TONNES), 4)
-    m_flag = 1 if project_type in _HIGH_RISK_TYPES else 0
-    t_flag = 1 if r_ratio > 3.0 else 0
-    return r_ratio, m_flag, t_flag
+def computeFeatures(projectType: str, tonnes: int) -> tuple[float, int, int]:
+    rRatio = round(max(0.1, tonnes / peerAvgTonnes), 4)
+    mFlag = 1 if projectType in highRiskTypes else 0
+    tFlag = 1 if rRatio > 3.0 else 0
+    return rRatio, mFlag, tFlag
 
 
 @app.get("/stakeholders")
-def get_stakeholders():
+def getStakeholders():
     return [{"name": name, "address": addr} for name, addr in STAKEHOLDERS.items()]
 
 
 @app.post("/credits/issue", status_code=201)
-def issue_credit(req: MintRequest):
+def issueCredit(req: MintRequest):
     # scores the project with the AI model, mines a PoW nonce, gets both
     # endorsement signatures, then sends the whole thing to the contract
-    w3, contract = get_contract()
+    w3, contract = getContract()
 
-    owner_address = STAKEHOLDERS.get(req.owner_id)
-    if not owner_address:
+    ownerAddress = STAKEHOLDERS.get(req.owner_id)
+    if not ownerAddress:
         raise HTTPException(status_code=400, detail=f"Unknown stakeholder '{req.owner_id}'.")
 
-    vintage_age = 2026 - req.vintage_year
-    r_ratio, m_flag, t_flag = (
+    vintageAge = 2026 - req.vintage_year
+    rRatio, mFlag, tFlag = (
         (req.r_ratio, req.m_flag, req.t_flag)
         if None not in (req.r_ratio, req.m_flag, req.t_flag)
-        else _compute_features(req.project_type, req.tonnes)
+        else computeFeatures(req.project_type, req.tonnes)
     )
 
     features = {
-        "R_ratio":     r_ratio,
-        "Vintage_Age": vintage_age,
-        "M_flag":      m_flag,
-        "T_flag":      t_flag,
+        "R_ratio":     rRatio,
+        "Vintage_Age": vintageAge,
+        "M_flag":      mFlag,
+        "T_flag":      tFlag,
     }
 
-    risk_score = score_project(features)
-    risk_score_int = int(round(risk_score * 10_000))
-    credit_id = f"CRED-{uuid.uuid4().hex[:8].upper()}"
+    riskScore = scoreProject(features)
+    riskScoreInt = int(round(riskScore * 10_000))
+    creditId = f"CRED-{uuid.uuid4().hex[:8].upper()}"
 
     try:
-        pow_nonce = mine_pow_nonce(credit_id)
-        owner_checksum = Web3.to_checksum_address(owner_address)
-        dev_sig = _sign_endorsement(credit_id, req.tonnes, owner_checksum, DEVELOPER_SIGNER_KEY)
-        reg_sig = _sign_endorsement(credit_id, req.tonnes, owner_checksum, REGULATOR_SIGNER_KEY)
-        nonce  = w3.eth.get_transaction_count(DEPLOYER_ADDRESS)
-        tx     = contract.functions.issueCredit(
-            credit_id,
+        powNonce = minePowNonce(creditId)
+        ownerChecksum = Web3.to_checksum_address(ownerAddress)
+        devSig = signEndorsement(creditId, req.tonnes, ownerChecksum, DEVELOPER_SIGNER_KEY)
+        regSig = signEndorsement(creditId, req.tonnes, ownerChecksum, REGULATOR_SIGNER_KEY)
+        nonce = w3.eth.get_transaction_count(DEPLOYER_ADDRESS)
+        tx = contract.functions.issueCredit(
+            creditId,
             req.tonnes,
             req.developer_id,
             req.regulator_id,
-            risk_score_int,
-            owner_checksum,
-            pow_nonce,
-            dev_sig,
-            reg_sig,
+            riskScoreInt,
+            ownerChecksum,
+            powNonce,
+            devSig,
+            regSig,
         ).build_transaction({
             "from":     DEPLOYER_ADDRESS,
             "nonce":    nonce,
             "gas":      800_000,
             "gasPrice": w3.eth.gas_price,
         })
-        signed  = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+        signed = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_KEY)
+        txHash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(txHash, timeout=30)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Contract call failed: {e}")
 
     if receipt.status != 1:
         raise HTTPException(status_code=500, detail="Transaction reverted on-chain.")
 
-    token_id = None
+    tokenId = None
     try:
         logs = contract.events.CreditIssued().process_receipt(receipt)
         if logs:
-            token_id = logs[0].args.tokenId
+            tokenId = logs[0].args.tokenId
     except Exception:
         pass
 
     return {
-        "credit_id":            credit_id,
-        "ai_risk_score":        risk_score,
-        "ai_risk_score_scaled": risk_score_int,
+        "credit_id":            creditId,
+        "ai_risk_score":        riskScore,
+        "ai_risk_score_scaled": riskScoreInt,
         "computed_features":    features,
         "owner_id":             req.owner_id,
-        "owner_address":        owner_checksum,
+        "owner_address":        ownerChecksum,
         "tonnes":               req.tonnes,
-        "tx_hash":              tx_hash.hex(),
+        "tx_hash":              txHash.hex(),
         "block_number":         receipt.blockNumber,
         "contract_address":     CONTRACT_ADDRESS,
-        "pow_nonce":            pow_nonce,
-        "token_id":             token_id,
+        "pow_nonce":            powNonce,
+        "token_id":             tokenId,
         "developer_signer":     DEVELOPER_SIGNER_ADDRESS,
         "regulator_signer":     REGULATOR_SIGNER_ADDRESS,
         "status":               "minted",
@@ -306,90 +306,90 @@ def issue_credit(req: MintRequest):
 
 
 @app.post("/credits/pending", status_code=201)
-def submit_pending(req: MintRequest):
+def submitPending(req: MintRequest):
     # developer submits a credit request. We score it with the AI model
-    # but don't mint yet. It sits in _pending until the regulator approves.
-    owner_address = STAKEHOLDERS.get(req.owner_id)
-    if not owner_address:
+    # but don't mint yet. It sits in pendingCredits until the regulator approves.
+    ownerAddress = STAKEHOLDERS.get(req.owner_id)
+    if not ownerAddress:
         raise HTTPException(status_code=400, detail=f"Unknown stakeholder '{req.owner_id}'.")
 
     if req.developer_signature:
-        msg_hash = Web3.solidity_keccak(
+        msgHash = Web3.solidity_keccak(
             ["string", "string", "uint256"],
             [req.project_id, req.project_type, req.tonnes],
         )
         recovered = Account.recover_message(
-            encode_defunct(msg_hash), signature=req.developer_signature
+            encode_defunct(msgHash), signature=req.developer_signature
         )
-        if recovered.lower() != owner_address.lower():
+        if recovered.lower() != ownerAddress.lower():
             raise HTTPException(
                 status_code=403,
                 detail="Signature does not match the declared developer identity.",
             )
 
-    vintage_age = 2026 - req.vintage_year
-    r_ratio, m_flag, t_flag = (
+    vintageAge = 2026 - req.vintage_year
+    rRatio, mFlag, tFlag = (
         (req.r_ratio, req.m_flag, req.t_flag)
         if None not in (req.r_ratio, req.m_flag, req.t_flag)
-        else _compute_features(req.project_type, req.tonnes)
+        else computeFeatures(req.project_type, req.tonnes)
     )
 
     features = {
-        "R_ratio":     r_ratio,
-        "Vintage_Age": vintage_age,
-        "M_flag":      m_flag,
-        "T_flag":      t_flag,
+        "R_ratio":     rRatio,
+        "Vintage_Age": vintageAge,
+        "M_flag":      mFlag,
+        "T_flag":      tFlag,
     }
 
-    risk_score = score_project(features)
-    risk_score_int = int(round(risk_score * 10_000))
+    riskScore = scoreProject(features)
+    riskScoreInt = int(round(riskScore * 10_000))
 
-    if risk_score_int >= 7000:
+    if riskScoreInt >= 7000:
         raise HTTPException(
             status_code=422,
-            detail=f"AI risk score too high ({risk_score:.4f}). Credit rejected before submission.",
+            detail=f"AI risk score too high ({riskScore:.4f}). Credit rejected before submission.",
         )
 
-    pending_id = f"PEND-{uuid.uuid4().hex[:8].upper()}"
-    credit_id  = f"CRED-{uuid.uuid4().hex[:8].upper()}"
+    pendingId = f"PEND-{uuid.uuid4().hex[:8].upper()}"
+    creditId = f"CRED-{uuid.uuid4().hex[:8].upper()}"
 
-    _pending[pending_id] = {
-        "pending_id":     pending_id,
-        "credit_id":      credit_id,
+    pendingCredits[pendingId] = {
+        "pending_id":     pendingId,
+        "credit_id":      creditId,
         "project_id":     req.project_id,
         "project_type":   req.project_type,
         "tonnes":         req.tonnes,
         "vintage_year":   req.vintage_year,
         "owner_id":       req.owner_id,
-        "owner_address":  owner_address,
+        "owner_address":  ownerAddress,
         "developer_id":   req.developer_id,
         "regulator_id":   req.regulator_id,
-        "risk_score":     risk_score,
-        "risk_score_int": risk_score_int,
+        "risk_score":     riskScore,
+        "risk_score_int": riskScoreInt,
         "features":       features,
         "status":         "pending",
         "submitted_at":   datetime.now(timezone.utc).isoformat(),
     }
 
     return {
-        "pending_id":    pending_id,
-        "credit_id":     credit_id,
-        "ai_risk_score": risk_score,
+        "pending_id":    pendingId,
+        "credit_id":     creditId,
+        "ai_risk_score": riskScore,
         "status":        "pending",
         "message":       "Submitted for regulator review.",
     }
 
 
 @app.get("/credits/pending")
-def list_pending():
-    return list(_pending.values())
+def listPending():
+    return list(pendingCredits.values())
 
 
 @app.post("/credits/approve/{pending_id}", status_code=201)
-def approve_credit(pending_id: str, req: ApproveRequest):
+def approveCredit(pending_id: str, req: ApproveRequest):
     # regulator approves a pending credit. This triggers the actual on chain
     # mint with PoW, dual signatures, and everything.
-    pending = _pending.get(pending_id)
+    pending = pendingCredits.get(pending_id)
     if not pending:
         raise HTTPException(status_code=404, detail=f"Pending credit '{pending_id}' not found.")
 
@@ -399,65 +399,65 @@ def approve_credit(pending_id: str, req: ApproveRequest):
     if req.regulator_address.lower() != REGULATOR_ADDRESS.lower():
         raise HTTPException(status_code=403, detail="Only the registered regulator can approve credits.")
 
-    w3, contract = get_contract()
+    w3, contract = getContract()
 
-    credit_id = pending["credit_id"]
-    owner_checksum = Web3.to_checksum_address(pending["owner_address"])
-    risk_score_int = pending["risk_score_int"]
+    creditId = pending["credit_id"]
+    ownerChecksum = Web3.to_checksum_address(pending["owner_address"])
+    riskScoreInt = pending["risk_score_int"]
 
     try:
-        pow_nonce = mine_pow_nonce(credit_id)
-        dev_sig   = _sign_endorsement(credit_id, pending["tonnes"], owner_checksum, DEVELOPER_SIGNER_KEY)
-        reg_sig   = _sign_endorsement(credit_id, pending["tonnes"], owner_checksum, REGULATOR_SIGNER_KEY)
-        nonce     = w3.eth.get_transaction_count(DEPLOYER_ADDRESS)
+        powNonce = minePowNonce(creditId)
+        devSig = signEndorsement(creditId, pending["tonnes"], ownerChecksum, DEVELOPER_SIGNER_KEY)
+        regSig = signEndorsement(creditId, pending["tonnes"], ownerChecksum, REGULATOR_SIGNER_KEY)
+        nonce = w3.eth.get_transaction_count(DEPLOYER_ADDRESS)
         tx = contract.functions.issueCredit(
-            credit_id,
+            creditId,
             pending["tonnes"],
             pending["developer_id"],
             pending["regulator_id"],
-            risk_score_int,
-            owner_checksum,
-            pow_nonce,
-            dev_sig,
-            reg_sig,
+            riskScoreInt,
+            ownerChecksum,
+            powNonce,
+            devSig,
+            regSig,
         ).build_transaction({
             "from":     DEPLOYER_ADDRESS,
             "nonce":    nonce,
             "gas":      800_000,
             "gasPrice": w3.eth.gas_price,
         })
-        signed  = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+        signed = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_KEY)
+        txHash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(txHash, timeout=30)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Mint failed: {e}")
 
     if receipt.status != 1:
         raise HTTPException(status_code=500, detail="Transaction reverted on-chain.")
 
-    token_id = None
+    tokenId = None
     try:
         logs = contract.events.CreditIssued().process_receipt(receipt)
         if logs:
-            token_id = logs[0].args.tokenId
+            tokenId = logs[0].args.tokenId
     except Exception:
         pass
 
-    _pending[pending_id]["status"] = "approved"
+    pendingCredits[pending_id]["status"] = "approved"
 
     return {
-        "credit_id":            credit_id,
+        "credit_id":            creditId,
         "ai_risk_score":        pending["risk_score"],
-        "ai_risk_score_scaled": risk_score_int,
+        "ai_risk_score_scaled": riskScoreInt,
         "computed_features":    pending["features"],
         "owner_id":             pending["owner_id"],
-        "owner_address":        owner_checksum,
+        "owner_address":        ownerChecksum,
         "tonnes":               pending["tonnes"],
-        "tx_hash":              tx_hash.hex(),
+        "tx_hash":              txHash.hex(),
         "block_number":         receipt.blockNumber,
         "contract_address":     CONTRACT_ADDRESS,
-        "pow_nonce":            pow_nonce,
-        "token_id":             token_id,
+        "pow_nonce":            powNonce,
+        "token_id":             tokenId,
         "developer_signer":     DEVELOPER_SIGNER_ADDRESS,
         "regulator_signer":     REGULATOR_SIGNER_ADDRESS,
         "status":               "minted",
@@ -465,41 +465,41 @@ def approve_credit(pending_id: str, req: ApproveRequest):
 
 
 @app.get("/credits/{credit_id}")
-def get_credit(credit_id: str):
-    _, contract = get_contract()
+def getCredit(credit_id: str):
+    _, contract = getContract()
 
     try:
         if not contract.functions.doesCreditExist(credit_id).call():
             raise HTTPException(status_code=404, detail=f"Credit '{credit_id}' not found.")
-        tonnes, dev_id, reg_id, risk_int, owner, is_retired, token_id = \
+        tonnes, devId, regId, riskInt, owner, isRetired, tokenId = \
             contract.functions.getCredit(credit_id).call()
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Contract call failed: {e}")
 
-    addr_to_name = {v: k for k, v in STAKEHOLDERS.items()}
+    addrToName = {v: k for k, v in STAKEHOLDERS.items()}
 
     return {
         "credit_id":            credit_id,
         "tonnes":               tonnes,
-        "developer_id":         dev_id,
-        "regulator_id":         reg_id,
-        "ai_risk_score":        risk_int / 10_000,
-        "ai_risk_score_scaled": risk_int,
+        "developer_id":         devId,
+        "regulator_id":         regId,
+        "ai_risk_score":        riskInt / 10_000,
+        "ai_risk_score_scaled": riskInt,
         "owner":                owner,
-        "owner_name":           addr_to_name.get(owner, "Unknown"),
-        "is_retired":           is_retired,
-        "token_id":             token_id,
+        "owner_name":           addrToName.get(owner, "Unknown"),
+        "is_retired":           isRetired,
+        "token_id":             tokenId,
     }
 
 
 @app.get("/chain/stats")
-def get_chain_stats():
-    w3, contract = get_contract()
+def getChainStats():
+    w3, contract = getContract()
     admin = contract.functions.admin().call()
-    merkle_root = contract.functions.merkleRoot().call()
-    total_credits = contract.functions.totalCredits().call()
+    merkleRoot = contract.functions.merkleRoot().call()
+    totalCredits = contract.functions.totalCredits().call()
     return {
         "network":           "Hardhat Local",
         "chain_id":          w3.eth.chain_id,
@@ -509,23 +509,23 @@ def get_chain_stats():
         "developer_signer":  DEVELOPER_SIGNER_ADDRESS,
         "regulator_signer":  REGULATOR_SIGNER_ADDRESS,
         "node_url":          HARDHAT_RPC,
-        "merkle_root":       "0x" + merkle_root.hex(),
-        "total_credits":     total_credits,
+        "merkle_root":       "0x" + merkleRoot.hex(),
+        "total_credits":     totalCredits,
     }
 
 
 @app.get("/chain/events")
-def get_chain_events():
-    _, contract = get_contract()
+def getChainEvents():
+    _, contract = getContract()
 
     try:
-        issued      = contract.events.CreditIssued.get_logs(from_block=0)
+        issued = contract.events.CreditIssued.get_logs(from_block=0)
         transferred = contract.events.CreditTransferred.get_logs(from_block=0)
-        retired     = contract.events.CreditRetired.get_logs(from_block=0)
+        retired = contract.events.CreditRetired.get_logs(from_block=0)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read event logs: {e}")
 
-    addr_to_name = {v: k for k, v in STAKEHOLDERS.items()}
+    addrToName = {v: k for k, v in STAKEHOLDERS.items()}
     events = []
 
     for e in issued:
@@ -536,7 +536,7 @@ def get_chain_events():
             "tx_hash":       e.transactionHash.hex(),
             "credit_id":     e.args.creditId,
             "owner":         owner,
-            "owner_name":    addr_to_name.get(owner, "Unknown"),
+            "owner_name":    addrToName.get(owner, "Unknown"),
             "tonnes":        e.args.tonnes,
             "ai_risk_score": e.args.aiRiskScore / 10_000,
             "developer_id":  e.args.developerId,
@@ -544,17 +544,17 @@ def get_chain_events():
         })
 
     for e in transferred:
-        from_addr = e.args["from"]
-        to_addr   = e.args["to"]
+        fromAddr = e.args["from"]
+        toAddr = e.args["to"]
         events.append({
             "type":         "transferred",
             "block":        e.blockNumber,
             "tx_hash":      e.transactionHash.hex(),
             "credit_id":    e.args.creditId,
-            "from_address": from_addr,
-            "from_name":    addr_to_name.get(from_addr, "Unknown"),
-            "to_address":   to_addr,
-            "to_name":      addr_to_name.get(to_addr, "Unknown"),
+            "from_address": fromAddr,
+            "from_name":    addrToName.get(fromAddr, "Unknown"),
+            "to_address":   toAddr,
+            "to_name":      addrToName.get(toAddr, "Unknown"),
         })
 
     for e in retired:
@@ -565,7 +565,7 @@ def get_chain_events():
             "tx_hash":    e.transactionHash.hex(),
             "credit_id":  e.args.creditId,
             "owner":      owner,
-            "owner_name": addr_to_name.get(owner, "Unknown"),
+            "owner_name": addrToName.get(owner, "Unknown"),
         })
 
     events.sort(key=lambda x: x["block"], reverse=True)
@@ -573,48 +573,48 @@ def get_chain_events():
 
 
 @app.get("/credits/{credit_id}/proof")
-def get_credit_proof(credit_id: str):
+def getCreditProof(credit_id: str):
     # rebuilds the full leaf list from on chain events, finds the target credit,
-    # and computes a Merkle inclusion proof you can pass to verifyCredit()
-    _, contract = get_contract()
+    # and computes a Merkle inclusion proof which can pass to verifyCredit()
+    _, contract = getContract()
 
     if not contract.functions.doesCreditExist(credit_id).call():
         raise HTTPException(status_code=404, detail=f"Credit '{credit_id}' not found.")
 
     try:
-        issued_events = contract.events.CreditIssued.get_logs(from_block=0)
+        issuedEvents = contract.events.CreditIssued.get_logs(from_block=0)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read events: {e}")
 
-    issued_events = sorted(issued_events, key=lambda ev: (ev.blockNumber, ev.logIndex))
+    issuedEvents = sorted(issuedEvents, key=lambda ev: (ev.blockNumber, ev.logIndex))
 
-    all_leaves: list[bytes] = []
-    target_index: int | None = None
+    allLeaves: list[bytes] = []
+    targetIndex: int | None = None
 
-    for i, ev in enumerate(issued_events):
-        leaf = _credit_leaf(
+    for i, ev in enumerate(issuedEvents):
+        leaf = creditLeaf(
             ev.args.creditId,
             ev.args.tonnes,
             ev.args.owner,
             ev.args.aiRiskScore,
         )
-        all_leaves.append(leaf)
+        allLeaves.append(leaf)
         if ev.args.creditId == credit_id:
-            target_index = i
+            targetIndex = i
 
-    if target_index is None:
+    if targetIndex is None:
         raise HTTPException(status_code=404, detail="Credit not found in event logs.")
 
-    root, proof = _build_merkle_proof(all_leaves, target_index)
-    leaf_hex    = "0x" + all_leaves[target_index].hex()
-    root_hex    = "0x" + root.hex()
+    root, proof = buildMerkleProof(allLeaves, targetIndex)
+    leafHex = "0x" + allLeaves[targetIndex].hex()
+    rootHex = "0x" + root.hex()
 
     return {
         "credit_id":      credit_id,
-        "leaf_hash":      leaf_hex,
-        "leaf_index":     target_index,
-        "merkle_root":    root_hex,
+        "leaf_hash":      leafHex,
+        "leaf_index":     targetIndex,
+        "merkle_root":    rootHex,
         "proof":          ["0x" + p.hex() for p in proof],
         "proof_length":   len(proof),
-        "total_credits":  len(all_leaves),
+        "total_credits":  len(allLeaves),
     }

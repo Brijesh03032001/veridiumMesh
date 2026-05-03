@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from api.app import app, STAKEHOLDERS, _compute_features
+from api.app import app, STAKEHOLDERS, computeFeatures
 
 client = TestClient(app)
 
@@ -157,23 +157,23 @@ class TestStakeholders:
 
 class TestMLFeatures:
     def test_r_ratio_scaled_correctly(self):
-        r, m, t = _compute_features("Cookstoves", 50_000)
+        r, m, t = computeFeatures("Cookstoves", 50_000)
         assert r == pytest.approx(1.0)
 
     def test_high_risk_type_sets_m_flag(self):
-        _, m, _ = _compute_features("Solar", 5000)
+        _, m, _ = computeFeatures("Solar", 5000)
         assert m == 1
 
     def test_low_risk_type_clears_m_flag(self):
-        _, m, _ = _compute_features("Cookstoves", 5000)
+        _, m, _ = computeFeatures("Cookstoves", 5000)
         assert m == 0
 
     def test_oversized_claim_sets_t_flag(self):
-        _, _, t = _compute_features("Cookstoves", 200_000)  # 4× peer avg
+        _, _, t = computeFeatures("Cookstoves", 200_000)  # 4× peer avg
         assert t == 1
 
     def test_normal_claim_clears_t_flag(self):
-        _, _, t = _compute_features("Cookstoves", 10_000)
+        _, _, t = computeFeatures("Cookstoves", 10_000)
         assert t == 0
 
 
