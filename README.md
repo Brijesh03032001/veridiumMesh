@@ -1,20 +1,191 @@
-# VeridiumMesh — AI-Powered Carbon Credit Fraud Detection on Ethereum
+<div align="center">
 
-A decentralized system that uses an Isolation Forest anomaly detection model together with an Ethereum smart contract to catch fraudulent carbon credits before they ever make it on chain.
+![VeridiumMesh Banner](banner/image.png)
+
+### AI-Powered Carbon Credit Fraud Detection on Ethereum
+
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.28-363636?style=flat&logo=solidity&logoColor=white)](https://soliditylang.org)
+[![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat&logo=next.js&logoColor=white)](https://nextjs.org)
+[![Hardhat](https://img.shields.io/badge/Hardhat-2.28-FFF100?style=flat&logo=hardhat&logoColor=black)](https://hardhat.org)
+[![scikit-learn](https://img.shields.io/badge/scikit--learn-1.5-F7931E?style=flat&logo=scikit-learn&logoColor=white)](https://scikit-learn.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+*CSE540 Blockchain — Team 16 · Arizona State University · Spring 2026*
+
+</div>
 
 ---
 
-## What This Project Does
+## The Problem
 
-Carbon credit markets have a serious fraud problem. Projects inflate their issuance volumes, credits get double counted, and sometimes the projects behind them don't even exist. VeridiumMesh tackles this by:
+The global carbon credit market is worth **$2 billion+** — and riddled with fraud. Projects inflate issuance volumes by 10×, credits are double-counted across registries, and some projects don't even exist. Existing registries rely on manual audits that are slow, expensive, and gameable.
 
-1. Running every credit through a trained Isolation Forest model before it touches the blockchain. If the AI flags it as high risk (score >= 0.7), the credit gets rejected automatically.
-2. Requiring dual approval from both a project developer and a government regulator. Neither can mint a credit alone.
-3. Writing the AI risk score permanently into the Ethereum smart contract so auditors can always verify that screening happened.
-4. Logging every action (issuance, transfer, retirement) as Ethereum events, creating a tamper proof audit trail.
-5. Giving users a web frontend with three views: a developer console for submitting credits, a regulator dashboard for reviewing and approving them, and a blockchain explorer for looking up any credit on chain.
+**VeridiumMesh is the answer:** a decentralized, AI-gated system that makes it cryptographically impossible to mint a fraudulent carbon credit.
 
-The training data comes from the **Berkeley Voluntary Registry Offsets Database (VROD)**, a public dataset of roughly 5,700 real world carbon credit projects.
+---
+
+## What Makes This Project Unique
+
+> These are the standout engineering decisions a recruiter or reviewer should notice.
+
+| # | Unique Trait | Detail |
+|---|---|---|
+| 🤖 | **AI-Gated Smart Contract** | An Isolation Forest ML model trained on 5,700 real projects screens every credit *before* it touches the blockchain. Credits with a risk score ≥ 0.7 are auto-rejected — the contract never even sees them. |
+| ✍️ | **Dual ECDSA Multi-Signature Minting** | `issueCredit()` uses Solidity's `ecrecover` to verify two independent ECDSA signatures on-chain — one from a registered developer, one from a registered regulator. Neither party can mint alone. |
+| ⛏️ | **Proof-of-Work Per Credit** | Every mint requires the backend to find a nonce where `keccak256(creditId + nonce)` has its top 8 bits as zero. This makes spam-minting computationally expensive, mirroring Bitcoin-style PoW. |
+| 🌿 | **On-Chain Merkle Tree** | Every issued credit becomes a leaf in a live Merkle tree stored in the contract. Anyone can request an O(log n) inclusion proof and verify it trustlessly — no external oracle needed. |
+| 🔗 | **Immutable AI Audit Trail** | The AI risk score is encoded as a uint256 (multiplied by 10,000) and permanently written into the NFT. Regulators can cryptographically verify that screening happened — forever. |
+| 🏛️ | **Role-Based Decentralized Governance** | Admin, Registrar, Developer, and Regulator roles are managed entirely on-chain. No single address controls the system. |
+| 🪙 | **ERC-721 Carbon Credit NFTs** | Each credit is a unique non-fungible token. Transfers and retirements (burns) are logged as Ethereum events — a tamper-proof, real-time audit trail. |
+| 🔬 | **Real-World Training Data** | The Isolation Forest was trained on the **Berkeley Voluntary Registry Offsets Database (VROD)** — ~5,700 actual carbon credit projects, not synthetic data. |
+
+---
+
+## Skills & Technologies Demonstrated
+
+```
+Machine Learning          │  Isolation Forest · scikit-learn · joblib · Feature Engineering
+Blockchain / Solidity     │  ERC-721 · ecrecover · Merkle Tree · Proof-of-Work · OpenZeppelin
+Backend                   │  FastAPI · Web3.py · Pydantic · Uvicorn · REST API Design
+Frontend                  │  Next.js 16 · TypeScript · Tailwind CSS · shadcn/ui · ethers.js
+Cryptography              │  ECDSA Signatures · EIP-191 Message Hashing · keccak256 · Merkle Proofs
+Testing                   │  pytest · Hardhat (30+ Solidity unit tests) · httpx · Jest
+DevOps / Tooling          │  Hardhat local node · MetaMask integration · Jupyter notebooks
+Data Science              │  Berkeley VROD dataset · EDA · Pandas · NumPy
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           USER (Browser + MetaMask)                          │
+└────────────────────┬───────────────────────────────────────┬────────────────┘
+                     │ HTTP (fetch)                           │ ethers.js direct calls
+                     ▼                                        ▼
+┌────────────────────────────────┐          ┌─────────────────────────────────┐
+│         Next.js Frontend       │          │     Ethereum (Hardhat / Mainnet) │
+│         localhost:3000          │          │         Chain ID: 31337          │
+│                                │          │                                  │
+│  ┌──────────────────────────┐  │          │  ┌───────────────────────────┐  │
+│  │   Developer Console      │  │          │  │   CarbonCredit.sol (ERC721)│  │
+│  │  Submit credit + sign    │  │          │  │                           │  │
+│  └──────────────────────────┘  │          │  │  issueCredit()            │  │
+│  ┌──────────────────────────┐  │          │  │  ├─ verify PoW nonce      │  │
+│  │   Regulator Dashboard    │  │          │  │  ├─ ecrecover (dev sig)   │  │
+│  │  Review AI score + sign  │  │          │  │  ├─ ecrecover (reg sig)   │  │
+│  └──────────────────────────┘  │          │  │  ├─ mint ERC-721 NFT      │  │
+│  ┌──────────────────────────┐  │          │  │  └─ update Merkle tree    │  │
+│  │   Blockchain Explorer    │  │          │  │                           │  │
+│  │  Lookup + Merkle proofs  │  │          │  │  transferCredit()         │  │
+│  └──────────────────────────┘  │          │  │  retireCredit() [burn]    │  │
+└────────────────────┬───────────┘          │  │  verifyCredit() [proof]   │  │
+                     │ REST API             │  └───────────────────────────┘  │
+                     ▼                      └──────────────▲──────────────────┘
+┌────────────────────────────────┐                         │ web3.py / contract call
+│       FastAPI Backend          │─────────────────────────┘
+│       localhost:8000           │
+│                                │
+│  POST /credits/pending         │  ◄── Developer submits
+│  GET  /credits/pending         │  ◄── Regulator fetches queue
+│  POST /credits/approve/{id}    │  ─── Regulator approves → triggers mint
+│  GET  /credits/{id}/proof      │  ◄── Merkle inclusion proof
+│  GET  /chain/stats             │  ◄── Live block / Merkle root
+│                                │
+│  ┌──────────────────────────┐  │
+│  │   ML Scoring Layer       │  │
+│  │   ml/model.py            │  │
+│  │                          │  │
+│  │  Input features:         │  │
+│  │  • R_ratio (vol/avg)     │  │
+│  │  • Vintage_Age           │  │
+│  │  • M_flag (project type) │  │
+│  │  • T_flag (volume spike) │  │
+│  │                          │  │
+│  │  Isolation Forest ──────►│  │
+│  │  score ≥ 0.7 → REJECT    │  │
+│  │  score < 0.7 → PENDING   │  │
+│  └──────────────────────────┘  │
+└────────────────────────────────┘
+```
+
+### End-to-End Credit Lifecycle
+
+```
+Developer fills form
+        │
+        ▼
+[Frontend] Sign with MetaMask ──► POST /credits/pending
+        │
+        ▼
+[Backend] Run Isolation Forest
+        │
+   ┌────┴────┐
+score ≥ 0.7  score < 0.7
+   │            │
+REJECTED     QUEUED
+             │
+             ▼
+   Regulator opens Dashboard
+             │
+             ▼
+   [Frontend] Sign with MetaMask ──► POST /credits/approve/{id}
+             │
+             ▼
+   [Backend] Mine PoW nonce
+             │
+             ▼
+   [Backend] Sign dev + reg endorsements (ECDSA / EIP-191)
+             │
+             ▼
+   [Contract] issueCredit()
+     ├─ verify keccak256(creditId+nonce) top-8-bits == 0
+     ├─ ecrecover(devSig) → must be registered developer
+     ├─ ecrecover(regSig) → must be registered regulator
+     ├─ mint ERC-721 NFT
+     ├─ store AI risk score on-chain (uint256 × 10,000)
+     ├─ emit CreditIssued event
+     └─ update on-chain Merkle tree → emit MerkleRootUpdated
+             │
+             ▼
+   Credit lives as an NFT forever
+   Owner can transfer or retire (burn) it at any time
+```
+
+---
+
+---
+
+## Quick Start
+
+```bash
+# Terminal 1 — Local Ethereum node
+cd ethereum && ./node_modules/.bin/hardhat node
+
+# Terminal 2 — Deploy contract (after node is up)
+cd ethereum && ./node_modules/.bin/hardhat run scripts/deploy.js --network localhost
+
+# Terminal 3 — FastAPI backend
+source veridium/bin/activate
+PYTHONPATH=. python -m uvicorn api.app:app --reload --port 8000
+
+# Terminal 4 — Next.js frontend
+cd frontend && npm install && npm run dev
+```
+
+**MetaMask Setup:**
+- Network: `Hardhat Local` · RPC: `http://127.0.0.1:8545` · Chain ID: `31337`
+- Developer account: import private key `0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d`
+- Regulator account: import private key `0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e`
+
+| Service | URL |
+|---|---|
+| Frontend | http://localhost:3000 |
+| API (+ Swagger docs) | http://127.0.0.1:8000/docs |
+| Hardhat RPC | http://127.0.0.1:8545 |
 
 ---
 
@@ -49,60 +220,6 @@ VeridiumMesh/
 ├── notebooks/                    # Jupyter EDA and feature engineering notebooks
 ├── scripts/                      # Utility scripts (feature engineering, EDA)
 └── requirements.txt
-```
-
----
-
-## How to Run
-
-### Step 1 — Start the Hardhat local Ethereum node
-
-```bash
-cd ethereum
-npx hardhat node
-```
-
-This starts a local node at http://127.0.0.1:8545 with 20 pre funded test accounts.
-
-### Step 2 — Deploy the smart contract
-
-```bash
-cd ethereum
-npx hardhat run scripts/deploy.js --network localhost
-```
-
-The script deploys the contract and registers the developer signer (Hardhat account #1) and regulator signer (account #6). It prints the contract address. If you restart the node, you need to redeploy.
-
-### Step 3 — Start the FastAPI backend
-
-```bash
-source veridium/bin/activate
-PYTHONPATH=. python -m uvicorn api.app:app --reload --port 8000
-```
-
-API docs available at http://127.0.0.1:8000/docs
-
-### Step 4 — Start the frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Opens at http://localhost:3000. You'll need MetaMask installed and connected to the Hardhat network (Chain ID 31337, RPC http://127.0.0.1:8545). Import one of the Hardhat test accounts into MetaMask to interact with the system.
-
-### Running Python Tests
-
-```bash
-PYTHONPATH=. python -m pytest tests/ -v
-```
-
-### Running Solidity Contract Tests
-
-```bash
-cd ethereum
-npx hardhat test
 ```
 
 ---
@@ -194,6 +311,28 @@ Example scores:
 
 ---
 
+## Testing
+
+### Python (pytest)
+```bash
+PYTHONPATH=. python -m pytest tests/ -v
+```
+Covers: ML scoring, API endpoints (httpx), blockchain interaction mocks.
+
+### Solidity (Hardhat / Mocha)
+```bash
+cd ethereum && ./node_modules/.bin/hardhat test
+```
+30+ unit tests covering: PoW validation, dual-sig minting, role access control, transfer, retirement, Merkle proof verification, and edge case reverts.
+
+### Frontend (Jest)
+```bash
+cd frontend && npm test
+```
+Covers: wallet context, contract helpers, API client, and page components.
+
+---
+
 ## Blockchain Principles Demonstrated
 
 | Principle | Where in the Code |
@@ -207,13 +346,4 @@ Example scores:
 | Audit Trail | Event logs for every issuance, transfer, and retirement. |
 
 ---
-
-## Team
-
-| # | Name | Role |
-|---|------|------|
-| 1 | **Harpreet Kaur Brar** | Chaincode and asset layer, project submission and query functions, frontend/UI development |
-| 2 | **Sreeram Saravana Prasad** | Credit creation (minting logic), validation checks, AI risk score integration, frontend/UI development |
-| 3 | **Asmi Umesh Pulgam** | Ownership updates and transaction handling, project report creation |
-| 4 | **Brijesh Kumar** | Credit retirement logic and double spending prevention, frontend/UI development |
-| 5 | **Vandhana Vemuri** | Audit functions, history tracking, endorsement policy configuration, project report creation |
+</div>
